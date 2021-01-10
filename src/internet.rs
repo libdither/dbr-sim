@@ -12,7 +12,7 @@ pub struct InternetPacket {
 	pub src_addr: InternetID,
 }
 
-pub trait CustomNode: Default {
+pub trait CustomNode {
 	fn net_id(&self) -> InternetID;
 	fn tick(&mut self, incoming: Vec<InternetPacket>) -> Vec<InternetPacket>;
 }
@@ -66,13 +66,14 @@ impl<CN: CustomNode> InternetSim<CN> {
 			..Default::default()
 		}
 	}
-	pub fn add(&mut self, node: CN) -> InternetID {
-		let id: InternetID = self.nodes.len() + 1;
-		self.nodes.insert(id, node);
-		id
+	pub fn lease(&self) -> InternetID {
+		self.nodes.len()
 	}
-	pub fn delete(&mut self, node_id: InternetID) {
-		self.nodes.remove(&node_id);
+	pub fn add_node(&mut self, node: CN) {
+		self.nodes.insert(node.net_id(), node);
+	}
+	pub fn del_node(&mut self, net_id: InternetID) {
+		self.nodes.remove(&net_id);
 	}
 	pub fn node_mut(&mut self, node_id: InternetID) -> Option<&mut CN> {
 		self.nodes.get_mut(&node_id)
