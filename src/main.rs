@@ -5,8 +5,7 @@ extern crate serde;
 #[macro_use]
 extern crate derivative;
 
-use std::io;
-use std::io::prelude::*;
+use std::io::{self, prelude::*};
 
 pub mod internet;
 use internet::{InternetID, InternetSim};
@@ -14,7 +13,7 @@ pub mod router;
 use router::{Node, NodeAction, NodeID};
 
 fn main() {
-	println!("Hello, world!");
+	println!("Hello, Network!");
 
 	let mut internet = InternetSim::new();
 	let node = Node::new(internet.lease());

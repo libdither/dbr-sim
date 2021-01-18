@@ -54,7 +54,6 @@ impl InternetRouter {
 	}
 }
 
-#[derive(Default)]
 pub struct InternetSim<CN: CustomNode> {
 	nodes: HashMap<InternetID, CN>,
 	router: InternetRouter,
@@ -63,7 +62,7 @@ impl<CN: CustomNode> InternetSim<CN> {
 	pub fn new() -> InternetSim<CN> {
 		InternetSim {
 			nodes: HashMap::new(),
-			..Default::default()
+			router: Default::default(),
 		}
 	}
 	pub fn lease(&self) -> InternetID {
