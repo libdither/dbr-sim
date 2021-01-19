@@ -20,13 +20,23 @@ fn main() {
 	internet.add_node(node);
 
 	let stdin = io::stdin();
-	let split_regex = regex::Regex::new("(?<=\")[^\"]*(?=\")|[^\" ]+").unwrap();
+	let split_regex = fancy_regex::Regex::new(r#"((?<=")[^"]*(?=")|[^" ]+)"#).unwrap();
 
 	for line_result in stdin.lock().lines() {
 		if let Ok(line) = line_result {
 			//let input = line.split(" ").collect::<Vec<&str>>();
 			let string = &line[..];
-			let input = split_regex.find_iter(string).map(|x| x.as_str()).collect::<Vec<&str>>();
+
+			// This replaces .find_iter() in regular regex crate
+			let mut input: Vec<&str> = Vec::new();
+			let mut current_pos = 0;
+			loop {
+				let capture = split_regex.captures_from_pos(string, current_pos).map_or(None, |c|c);
+				if let Some(Some(cap)) = capture.map(|c|c.get(0)) { current_pos = cap.end(); input.push(cap.as_str()) } else { break }
+			}
+			// This is what is should be
+			//let input = split_regex.find_iter(string).map(|x| x.as_str()).collect::<Vec<&str>>();
+
 			match input[..] {
 				// Adding Nodes
 				["add"] => {
@@ -56,6 +66,9 @@ fn main() {
 									if let Ok(num) = arg.parse::<NodeID>() {
 										node.action(NodeAction::Connect(num));
 									}
+								}
+								"info" => {
+									println!("Node: {:#?}", node);
 								}
 								_ => println!("Unknown node command: {:?}", command),
 							}
