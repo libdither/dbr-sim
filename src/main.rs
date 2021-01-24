@@ -36,8 +36,7 @@ fn main() {
 			}
 			// This is what is should be
 			//let input = split_regex.find_iter(string).map(|x| x.as_str()).collect::<Vec<&str>>();
-
-			println!("Parsing Info: {:?}", input);
+			
 			if let Err(err) = parse_command(&mut internet, &input) {
 				println!("Error: {:?}", err);
 			}
@@ -58,6 +57,12 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 				internet.add_node(node);
 			} else { Err("add: requires second argument to be NodeID")? }
 		},
+		Some(&"tick") => {
+			if let Some(Ok(num_ticks)) = command.next().map(|s|s.parse::<usize>()) {
+				println!("Running {} ticks", num_ticks);
+				internet.run(num_ticks);
+			}
+		},
 		// Removing Nodes
 		Some(&"del") => {
 			if let Some(Ok(net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
@@ -66,7 +71,7 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 		},
 		// Configuring network
 		Some(&"net") => {
-
+			println!("{:#?}", internet);
 		},
 		// List nodes
 		Some(&"list") => {
@@ -80,6 +85,7 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 					Some(&"bootstrap") => {
 						if let Some(Ok(bootstrap_net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
 							if let Some(Ok(bootstrap_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
+								println!("Bootstrapping node {:?} to node {:?}", net_id, bootstrap_net_id);
 								internet.node_action(net_id, NodeAction::Bootstrap(bootstrap_net_id, bootstrap_node_id))?;
 							} else { Err("node: bootstrap: requires a NodeID to establish secure connection")? }
 						} else { Err("node: bootstrap: requires InternetID to bootstrap off of")? }

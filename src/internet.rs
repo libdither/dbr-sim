@@ -19,9 +19,12 @@ pub trait CustomNode: std::fmt::Debug {
 	fn action(&mut self, action: Self::CustomNodeAction);
 }
 
-#[derive(Default)]
+/// Internet router
+#[derive(Default, Debug)]
 pub struct InternetRouter {
+	/// Map linking Node pairs to speed between them (supports differing 2-way speeds)
 	speed_map: HashMap<(InternetID, InternetID), usize>,
+	/// Map linking destination `Node`s to inbound packets
 	packet_map: HashMap<InternetID, Vec<(InternetPacket, usize)>>,
 }
 impl InternetRouter {
@@ -29,13 +32,17 @@ impl InternetRouter {
 		for packet in packets {
 			let index = (packet.src_addr, packet.dest_addr);
 
+			// Get Latency from speed map
 			let latency = if let Some(speed) = self.speed_map.get(&index) {
 				*speed
 			} else {
+				// TODO: precalculate speed from some node distance function
 				let random_speed = rand::random::<usize>() % 10 + 1;
 				self.speed_map.insert(index, random_speed);
+				self.speed_map.insert((index.1, index.0), random_speed); // Need to add same speed the other direction
 				random_speed
 			};
+			// Add packet to packet stream
 			if let Some(packet_stream) = self.packet_map.get_mut(&packet.dest_addr) {
 				packet_stream.push((packet, latency));
 			} else {
@@ -56,6 +63,7 @@ impl InternetRouter {
 	}
 }
 
+#[derive(Debug)]
 pub struct InternetSim<CN: CustomNode> {
 	nodes: HashMap<InternetID, CN>,
 	router: InternetRouter,
@@ -92,13 +100,17 @@ impl<CN: CustomNode> InternetSim<CN> {
 	}
 	pub fn run(&mut self, ticks: usize) {
 		//let packets_tmp = Vec::new();
-		for node in self.nodes.values_mut() {
-			// Get incoming Packets
-			let incoming_packets = self.router.tick_node(node.net_id());
-			// Get outgoing Packets
-			let outgoing_packets = node.tick(incoming_packets);
-			// Send packets through the router
-			self.router.add_packets(outgoing_packets);
+		for i in 0..ticks {
+			for node in self.nodes.values_mut() {
+				// Get Packets going to node
+				let incoming_packets = self.router.tick_node(node.net_id());
+				// Get packets coming from node
+				if incoming_packets.len() > 0 { log::debug!("Node: {:?} Receiving {:?}", node.net_id(), incoming_packets); }
+				let outgoing_packets = node.tick(incoming_packets);
+				// Send packets through the router
+				self.router.add_packets(outgoing_packets);
+			}
 		}
+		
 	}
 }

@@ -125,7 +125,7 @@ impl CustomNode for Node {
 					outgoing.push(NodePacket::RequestPeers.package(&self, net_id));
 				},
 				NodeAction::Connect(node) => {
-
+					log::info!("Outgoing Connection");
 				}
 			}
 		}
@@ -160,6 +160,7 @@ impl Node {
 
 		if packet.dest_addr == self.net_id {
 			if let Ok(node_packet) = serde_json::from_slice::<NodePacket>(&packet.data[..]) {
+				log::info!("Node {} received packet ({:?}) from NodeID:{}", self.node_id, node_packet, packet.src_addr);
 				match node_packet {
 					NodePacket::Ping => {
 						outgoing.push(NodePacket::PingResponse.package(&self, packet.src_addr));
