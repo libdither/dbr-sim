@@ -12,9 +12,11 @@ pub struct InternetPacket {
 	pub src_addr: InternetID,
 }
 
-pub trait CustomNode {
+pub trait CustomNode: std::fmt::Debug {
+	type CustomNodeAction;
 	fn net_id(&self) -> InternetID;
 	fn tick(&mut self, incoming: Vec<InternetPacket>) -> Vec<InternetPacket>;
+	fn action(&mut self, action: Self::CustomNodeAction);
 }
 
 #[derive(Default)]
@@ -76,6 +78,17 @@ impl<CN: CustomNode> InternetSim<CN> {
 	}
 	pub fn node_mut(&mut self, node_id: InternetID) -> Option<&mut CN> {
 		self.nodes.get_mut(&node_id)
+	}
+	pub fn node(&self, node_id: InternetID) -> Option<&CN> {
+		self.nodes.get(&node_id)
+	}
+	pub fn node_action(&mut self, node_id: InternetID, action: CN::CustomNodeAction) -> Result<(), Box<dyn std::error::Error>> {
+		Ok( self.nodes.get_mut(&node_id).ok_or("internet: node_action: invalid NodeID")?.action(action) )
+	}
+	pub fn list_nodes(&mut self) {
+		for (key, item) in &self.nodes {
+			println!("	{:?}", item);
+		}
 	}
 	pub fn run(&mut self, ticks: usize) {
 		//let packets_tmp = Vec::new();

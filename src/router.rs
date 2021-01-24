@@ -4,25 +4,33 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-use libp2p::{
+/*use libp2p::{
 	identity::{Keypair, PublicKey},
-};
+};*/
 pub use crate::internet::{CustomNode, InternetID, InternetPacket};
 
-pub type NodeID = u64;
+pub type NodeID = u8;
+pub struct SymmetricEncryption {
+	session_id: u32,
+	data: Vec<u8>,
+}
+pub struct AsymmetricEncryption {
+	node_id: NodeID, // In implementation, this will be the PeerID (e.g. the hash of the public key)
+	data: Vec<u8>, // Data that is "representative" of 
+}
 
 #[derive(Debug)]
 struct RemoteNodeConnection {
-	pub_key: PublicKey,
+	//pub_key: PublicKey,
 	//noise_session: Option<snow::TransportState>,
 	net_id: Option<InternetID>,
 	route_id: Vec<u16>,
 	latency: u32,
 }
 impl RemoteNodeConnection {
-	fn new(pub_key: PublicKey) -> Self {
+	fn new(/*pub_key: PublicKey*/) -> Self {
 		Self {
-			pub_key,
+			//pub_key,
 			//session_key: Default::default(),
 			net_id: Default::default(),
 			route_id: Default::default(),
@@ -78,7 +86,7 @@ impl NodePacket {
 
 #[derive(Debug)]
 pub enum NodeAction {
-	Bootstrap(InternetID),
+	Bootstrap(InternetID, NodeID),
 	Connect(NodeID),
 }
 
@@ -100,6 +108,7 @@ pub struct Node {
 	actions_queue: VecDeque<NodeAction>,
 }
 impl CustomNode for Node {
+	type CustomNodeAction = NodeAction;
 	fn net_id(&self) -> InternetID {
 		self.net_id
 	}
@@ -112,8 +121,8 @@ impl CustomNode for Node {
 		}
 		while let Some(action) = self.actions_queue.pop_front() {
 			match action {
-				NodeAction::Bootstrap(id) => {
-
+				NodeAction::Bootstrap(net_id, node_id) => {
+					outgoing.push(NodePacket::RequestPeers.package(&self, net_id));
 				},
 				NodeAction::Connect(node) => {
 
@@ -124,13 +133,16 @@ impl CustomNode for Node {
 		
 		outgoing
 	}
+	fn action(&mut self, action: NodeAction) {
+		self.actions_queue.push_back(action);
+	}
 }
 impl Node {
-	pub fn new(net_id: InternetID) -> Node {
-		let keypair = Keypair::generate_ed25519();
+	pub fn new(node_id: NodeID, net_id: InternetID) -> Node {
+		//let keypair = Keypair::generate_ed25519();
 		//let node_id = key.public().into_peer_id();
 		Node {
-			node_id: Default::default(),
+			node_id,
 			//keypair,
 			net_id,
 
@@ -142,9 +154,6 @@ impl Node {
 			node_id_map: Default::default(),
 			actions_queue: Default::default(),
 		}
-	}
-	pub fn action(&mut self, action: NodeAction) {
-		self.actions_queue.push_back(action);
 	}
 	pub fn parse_packet(&mut self, packet: InternetPacket, outgoing: &mut Vec<InternetPacket>) {
 		let mut outgoing: Vec<InternetPacket> = Default::default();
@@ -164,7 +173,7 @@ impl Node {
 					},
 					NodePacket::RequestPeersReponse(node_ids) => {
 						// TODO: Save these peers
-						let mut remote = self.net_id_map.get_mut(&packet.src_addr);
+						//let mut remote = self.net_id_map.get_mut(&packet.src_addr);
 					},
 					NodePacket::RequestPings(num) => {
 						// TODO: Find nodes that might be close to requester and ask them to ping requester
