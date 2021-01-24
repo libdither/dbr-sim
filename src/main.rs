@@ -4,6 +4,8 @@
 extern crate serde;
 #[macro_use]
 extern crate derivative;
+#[macro_use]
+extern crate log;
 
 use std::io::{self, prelude::*};
 
@@ -13,6 +15,7 @@ pub mod router;
 use router::{Node, NodeAction, NodeID};
 
 fn main() {
+	env_logger::init();
 	println!("Hello, Network!");
 
 	let mut internet = InternetSim::new();
