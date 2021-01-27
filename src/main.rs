@@ -11,8 +11,8 @@ use std::io::{self, prelude::*};
 
 pub mod internet;
 use internet::{InternetID, InternetSim};
-pub mod router;
-use router::{Node, NodeAction, NodeID};
+pub mod node;
+use node::{Node, NodeAction, NodeID};
 
 fn main() {
 	env_logger::init();
