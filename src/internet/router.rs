@@ -16,7 +16,7 @@ impl LatencyCalculator for EuclidianLatencyCalculator {
 	fn generate(rng: &mut impl rand::Rng) -> Self {
 		EuclidianLatencyCalculator {
 			variance: rng.gen_range(0, 5),
-			position: rng.gen(),
+			position: (rng.gen_range(-100, 100), rng.gen_range(-100, 100)),
 		}
 	}
 	fn calculate(&self, other: &Self, rng: &mut impl rand::Rng) -> usize {
