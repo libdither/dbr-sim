@@ -19,29 +19,50 @@ pub trait CustomNode: std::fmt::Debug {
 	fn action(&mut self, action: Self::CustomNodeAction);
 }
 
+pub trait LatencyCalculator: Default {
+	fn generate(rng: &mut impl rand::Rng) -> Self;
+	fn calculate(&self, other: &Self, rng: &mut impl rand::Rng) -> usize;
+}
+#[derive(Default, Debug)]
+pub struct EuclidianLatencyCalculator {
+	variance: usize,
+	position: (i32, i32),
+}
+impl LatencyCalculator for EuclidianLatencyCalculator {
+	fn generate(rng: &mut impl rand::Rng) -> Self {
+		EuclidianLatencyCalculator {
+			variance: rng.gen_range(0, 5),
+			position: rng.gen(),
+		}
+	}
+	fn calculate(&self, other: &Self, rng: &mut impl rand::Rng) -> usize {
+		let dx = self.position.0 - other.position.0;
+		let dy = self.position.1 - other.position.1;
+		((dx*dx + dy*dy) as f64).sqrt() as usize + rng.gen_range(0, self.variance)
+	}
+}
+
 /// Internet router
 #[derive(Default, Debug)]
-pub struct InternetRouter {
+pub struct InternetRouter<LC: LatencyCalculator> {
 	/// Map linking Node pairs to speed between them (supports differing 2-way speeds)
-	speed_map: HashMap<(InternetID, InternetID), usize>,
+	speed_map: HashMap<InternetID, LC>,
 	/// Map linking destination `Node`s to inbound packets
 	packet_map: HashMap<InternetID, Vec<(InternetPacket, usize)>>,
 }
-impl InternetRouter {
+impl<LC: LatencyCalculator> InternetRouter<LC> {
 	fn add_packets(&mut self, packets: Vec<InternetPacket>) {
+		let mut rng = rand::thread_rng();
 		for packet in packets {
 			let index = (packet.src_addr, packet.dest_addr);
 
-			// Get Latency from speed map
-			let latency = if let Some(speed) = self.speed_map.get(&index) {
-				*speed
-			} else {
-				// TODO: precalculate speed from some node distance function
-				let random_speed = rand::random::<usize>() % 10 + 1;
-				self.speed_map.insert(index, random_speed);
-				self.speed_map.insert((index.1, index.0), random_speed); // Need to add same speed the other direction
-				random_speed
-			};
+			self.speed_map.entry(packet.src_addr).or_insert_with(||LC::generate(&mut rng));
+			self.speed_map.entry(packet.dest_addr).or_insert_with(||LC::generate(&mut rng));
+			use std::ops::Index;
+			// This shouldn't panic since I set it right there ^^^
+			let latency = self.speed_map.index(&packet.src_addr).calculate(self.speed_map.index(&packet.dest_addr), &mut rng);
+			//let latency = src_calc.calculate(dest_calc, &mut rng);
+
 			// Add packet to packet stream
 			if let Some(packet_stream) = self.packet_map.get_mut(&packet.dest_addr) {
 				packet_stream.push((packet, latency));
@@ -66,7 +87,7 @@ impl InternetRouter {
 #[derive(Debug)]
 pub struct InternetSim<CN: CustomNode> {
 	nodes: HashMap<InternetID, CN>,
-	router: InternetRouter,
+	router: InternetRouter<EuclidianLatencyCalculator>,
 }
 impl<CN: CustomNode> InternetSim<CN> {
 	pub fn new() -> InternetSim<CN> {

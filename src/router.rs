@@ -4,12 +4,11 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
-/*use libp2p::{
-	identity::{Keypair, PublicKey},
-};*/
 pub use crate::internet::{CustomNode, InternetID, InternetPacket};
 
 pub type NodeID = u8;
+pub type RouteID = (usize, usize);
+
 pub struct SymmetricEncryption {
 	session_id: u32,
 	data: Vec<u8>,
@@ -58,14 +57,12 @@ pub enum NodePacket {
 	Ping,
 	// PingResponse packet, time between Ping and PingResponse is measured
 	PingResponse,
-	
-	// Request PeerIDs
-	RequestPeers,
-	RequestPeersReponse(Vec<NodeID>),
 
 	// Request to a peer for them to request their peers to ping me
 	RequestPings(u32), // u32: max number of pings
-	
+	// Tell a peer that this node wants a ping (implying a potential direct connection)
+	WantPing(InternetID, NodeID),
+
 	/// Request to establish a 2-way route between InternetID and this node through another node
 	/// Vec<u8> is an encrypted packet (this can contain anything)
 	Route(NodeID, Vec<u8>), 
@@ -122,7 +119,7 @@ impl CustomNode for Node {
 		while let Some(action) = self.actions_queue.pop_front() {
 			match action {
 				NodeAction::Bootstrap(net_id, node_id) => {
-					outgoing.push(NodePacket::RequestPeers.package(&self, net_id));
+					outgoing.push(NodePacket::RequestPings(10).package(&self, net_id));
 				},
 				NodeAction::Connect(node) => {
 					log::info!("Outgoing Connection");
@@ -169,15 +166,11 @@ impl Node {
 						// TODO: Log the time it too between Ping and PingResponse
 						//self.ping
 					},
-					NodePacket::RequestPeers => {
-						// TODO: Find Peer Ids to return (preferably close to the original requester)
-					},
-					NodePacket::RequestPeersReponse(node_ids) => {
-						// TODO: Save these peers
-						//let mut remote = self.net_id_map.get_mut(&packet.src_addr);
-					},
 					NodePacket::RequestPings(num) => {
 						// TODO: Find nodes that might be close to requester and ask them to ping requester
+					},
+					NodePacket::WantPing(net_id, node_id) => {
+						
 					},
 					NodePacket::Route(net_id, data) => {
 						// outgoing.push(value)
