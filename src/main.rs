@@ -6,6 +6,8 @@ extern crate serde;
 extern crate derivative;
 #[macro_use]
 extern crate log;
+#[macro_use]
+extern crate thiserror;
 
 use std::io::{self, prelude::*};
 

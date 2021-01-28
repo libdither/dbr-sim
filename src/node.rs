@@ -2,84 +2,11 @@
 #![allow(unused_variables)]
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
 
 pub use crate::internet::{CustomNode, InternetID, InternetPacket};
 
-pub type NodeID = u8;
-pub type RouteID = (usize, usize);
-
-pub struct SymmetricEncryption {
-	session_id: u32,
-	data: Vec<u8>,
-}
-pub struct AsymmetricEncryption {
-	node_id: NodeID, // In implementation, this will be the PeerID (e.g. the hash of the public key)
-	data: Vec<u8>, // Data that is "representative" of 
-}
-
-#[derive(Debug)]
-struct RemoteNodeConnection {
-	//pub_key: PublicKey,
-	//noise_session: Option<snow::TransportState>,
-	net_id: Option<InternetID>,
-	route_id: Vec<u16>,
-	latency: u32,
-}
-impl RemoteNodeConnection {
-	fn new(/*pub_key: PublicKey*/) -> Self {
-		Self {
-			//pub_key,
-			//session_key: Default::default(),
-			net_id: Default::default(),
-			route_id: Default::default(),
-			latency: Default::default(),
-		}
-	}
-}
-#[derive(Debug)]
-pub struct RemoteNode {
-	node_id: NodeID,
-	connection: Option<RemoteNodeConnection>,
-}
-impl RemoteNode {
-	fn new(node_id: NodeID) -> RemoteNode {
-		RemoteNode {
-			node_id,
-			connection: None,
-		}
-	}
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub enum NodePacket {
-	// Sent to other Nodes. Expects PingResponse returned
-	Ping,
-	// PingResponse packet, time between Ping and PingResponse is measured
-	PingResponse,
-
-	// Request to a peer for them to request their peers to ping me
-	RequestPings(u32), // u32: max number of pings
-	// Tell a peer that this node wants a ping (implying a potential direct connection)
-	WantPing(InternetID, NodeID),
-
-	/// Request to establish a 2-way route between InternetID and this node through another node
-	/// Vec<u8> is an encrypted packet (this can contain anything)
-	Route(NodeID, Vec<u8>), 
-	RouteError()
-}
-impl NodePacket {
-	pub fn package(&self, node: &Node, dest: InternetID) -> InternetPacket {
-		InternetPacket {
-			src_addr: node.net_id,
-			data: serde_json::to_vec(&self).expect("Failed to encode json"),
-			dest_addr: dest,
-		}
-	}
-	pub fn unpackage(packet: InternetPacket) -> Self {
-		serde_json::from_slice(&packet.data).expect("Failed to decode json")
-	}
-}
+mod types;
+pub use types::{NodeID, SessionID, RouteCoord, NodePacket, NodeEncryption, RemoteNode, RemoteNodeError};
 
 #[derive(Debug)]
 pub enum NodeAction {
@@ -87,21 +14,16 @@ pub enum NodeAction {
 	Connect(NodeID),
 }
 
-#[derive(Derivative)]
-#[derivative(Debug)]
+#[derive(Debug)]
 pub struct Node {
 	pub node_id: NodeID,
-	// #[derivative(Debug="ignore")]
-	// keypair: Keypair,
 	pub net_id: InternetID,
 
 	my_route: Vec<u16>,
 	ticks: usize, // Amount of time passed since startup of this node
 
-	peers: Vec<Arc<RemoteNode>>,
-	net_id_map: HashMap<InternetID, Arc<RemoteNode>>,
-	node_id_map: HashMap<NodeID, Arc<RemoteNode>>,
-
+	pub peers: HashMap<NodeID, RemoteNode>,
+	pub sessions: HashMap<SessionID, NodeID>,
 	actions_queue: VecDeque<NodeAction>,
 }
 impl CustomNode for Node {
@@ -119,7 +41,13 @@ impl CustomNode for Node {
 		while let Some(action) = self.actions_queue.pop_front() {
 			match action {
 				NodeAction::Bootstrap(net_id, node_id) => {
-					outgoing.push(NodePacket::RequestPings(10).package(&self, net_id));
+					if let Some(remote) = self.peers.get(&node_id) {
+						if remote.session_active() {
+							if let Ok(packet) = remote.gen_packet(&self, NodePacket::RequestPings(10)) {
+								outgoing.push(packet);
+							}
+						}
+					}
 				},
 				NodeAction::Connect(node) => {
 					log::info!("Outgoing Connection");
@@ -134,6 +62,24 @@ impl CustomNode for Node {
 		self.actions_queue.push_back(action);
 	}
 }
+#[derive(Error, Debug)]
+enum PacketParseError {
+    #[error("There is no known session: {session_id:?}")]
+	UnknownSession { session_id: SessionID },
+	#[error("InternetPacket from {from:?} was addressed to {intended_dest:?}, not me")]
+	InvalidNetworkRecipient { from: InternetID, intended_dest: InternetID },
+	#[error("Handshake was addressed to {node_id:?} and not me")]
+	InvalidHandshakeRecipient { node_id: NodeID },
+	#[error("Acknowledgement from {from:?} was recieved, but I didn't previously send a Handshake Request")]
+	UnknownAcknowledgement { from: NodeID },
+	#[error("Triggered RemoteNodeError")]
+	RemoteNodeError(#[from] RemoteNodeError),
+	#[error("Failed to decode packet data")]
+	SerdeDecodeError(#[from] serde_json::Error),
+	#[error("Session entry exists, but node entry does not {node_id:?}")]
+	InvalidRemoteButSessionExists { node_id: NodeID },
+}
+
 impl Node {
 	pub fn new(node_id: NodeID, net_id: InternetID) -> Node {
 		//let keypair = Keypair::generate_ed25519();
@@ -147,41 +93,62 @@ impl Node {
 			ticks: Default::default(),
 
 			peers: Default::default(),
-			net_id_map: Default::default(),
-			node_id_map: Default::default(),
+			sessions: Default::default(),
 			actions_queue: Default::default(),
 		}
 	}
-	pub fn parse_packet(&mut self, packet: InternetPacket, outgoing: &mut Vec<InternetPacket>) {
+	pub fn parse_packet(&mut self, packet: InternetPacket, outgoing: &mut Vec<InternetPacket>) -> Result<(), PacketParseError> {
 		let mut outgoing: Vec<InternetPacket> = Default::default();
 
 		if packet.dest_addr == self.net_id {
-			if let Ok(node_packet) = serde_json::from_slice::<NodePacket>(&packet.data[..]) {
-				log::info!("Node {} received packet ({:?}) from NodeID:{}", self.node_id, node_packet, packet.src_addr);
-				match node_packet {
-					NodePacket::Ping => {
-						outgoing.push(NodePacket::PingResponse.package(&self, packet.src_addr));
-					},
-					NodePacket::PingResponse => {
-						// TODO: Log the time it too between Ping and PingResponse
-						//self.ping
-					},
-					NodePacket::RequestPings(num) => {
-						// TODO: Find nodes that might be close to requester and ask them to ping requester
-					},
-					NodePacket::WantPing(net_id, node_id) => {
-						
-					},
-					NodePacket::Route(net_id, data) => {
-						// outgoing.push(value)
-					},
-					_ => { },
+			use NodeEncryption::*;
+			match NodeEncryption::unpackage(&packet)? {
+				Handshake { recipient, session_id, signer } => {
+					if recipient == self.node_id {
+						// If receive a Handshake Request, acknowledge it
+						let remote = self.peers.entry(signer).or_insert(RemoteNode::new(recipient));
+						let acknowledge_packet = remote.gen_acknowledgement(&mut self, recipient, session_id, signer);
+						outgoing.push(acknowledge_packet.package(self.net_id, packet.src_addr));
+					} else {
+						return Err( PacketParseError::InvalidHandshakeRecipient { node_id: recipient } )
+					}
+				},
+				Acknowledge { session_id, acknowledger } => {
+					// If receive an Acknowledge request, validate Handshake previously sent out
+					if let Some(remote) = self.peers.get(&acknowledger) {
+						remote.validate_handshake(&mut self, session_id, acknowledger);
+					} else {
+						return Err( PacketParseError::UnknownAcknowledgement { from: acknowledger } )
+					}
+				},
+				Session { session_id, packet: node_packet } => {
+					log::info!("Node {} received packet ({:?}) from InternetID:{}", self.node_id, node_packet, packet.src_addr);
+					let remote_node_id = self.sessions.get(&session_id).ok_or(PacketParseError::UnknownSession { session_id })?;
+					let remote = self.peers.get(remote_node_id).ok_or(PacketParseError::InvalidRemoteButSessionExists {node_id: remote_node_id.clone()})?;
+					match node_packet {
+						NodePacket::Ping => {
+							outgoing.push(remote.gen_packet(self, NodePacket::PingResponse)?);
+						},
+						NodePacket::PingResponse => {
+							// TODO: Log the time it too between Ping and PingResponse
+							//self.ping
+						},
+						NodePacket::RequestPings(num) => {
+							// TODO: Find nodes that might be close to requester and ask them to ping requester
+						},
+						NodePacket::WantPing(net_id, node_id) => {
+							
+						},
+						NodePacket::Route(net_id, data) => {
+							// outgoing.push(value)
+						},
+						_ => { },
+					}
 				}
-			} else {
-				println!("Unknown Packet Data: {:?}", packet.data);
-			};
+			}
 		} else {
-			println!("Received packet from: {} addressed to {} not me", packet.src_addr, packet.dest_addr);
+			return Err( PacketParseError::InvalidNetworkRecipient { from: packet.src_addr, intended_dest: packet.dest_addr } )
 		}
+		Ok(())
 	}
 }
