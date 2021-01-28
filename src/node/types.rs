@@ -106,18 +106,16 @@ impl RemoteNode {
 		NodeEncryption::Handshake { recipient: self.node_id, session_id, signer: me.node_id }
 	}
 	/// Acknowledge a NodeEncryption::Handshake and generate a NodeEncryption::Acknowledge to send back
-	pub fn gen_acknowledgement(&mut self, me: &mut Node, recipient: NodeID, session_id: SessionID, signer: NodeID) -> NodeEncryption {
+	pub fn gen_acknowledgement(&mut self, recipient: NodeID, session_id: SessionID, signer: NodeID) -> NodeEncryption {
 		self.session.get_or_insert(RemoteSession::new(session_id)).session_id = session_id; // Set session ID
-		me.sessions.insert(session_id, signer); // Register to SessionID index
-		NodeEncryption::Acknowledge { session_id, acknowledger: me.node_id }
+		NodeEncryption::Acknowledge { session_id, acknowledger: recipient }
 	}
 	/// Receive Acknowledgement of previously sent handshake and enable RemoteSession
-	pub fn validate_handshake(&mut self, me: &mut Node, session_id: SessionID, acknowledger: NodeID) -> Result<(), RemoteNodeError> {
-		if let Some(session) = self.session {
+	pub fn validate_handshake(&mut self, session_id: SessionID, acknowledger: NodeID) -> Result<SessionID, RemoteNodeError> {
+		if let Some(session) = &mut self.session {
 			if session.session_id == session_id {
 				session.outdated_session = false;
-				me.sessions.insert(session.session_id, acknowledger);
-				Ok(())
+				Ok(session.session_id)
 			} else {
 				Err( RemoteNodeError::InvalidSessionError { passed: session_id } )
 			}
@@ -126,15 +124,15 @@ impl RemoteNode {
 		}
 	}
 	pub fn encrypt(&self, packet: NodePacket) -> Result<NodeEncryption, RemoteNodeError> {
-		if let Some(session) = self.session {
+		if let Some(session) = &self.session {
 			Ok( NodeEncryption::Session { session_id: session.session_id, packet } )
 		} else { Err( RemoteNodeError::NoSessionError { node_id: self.node_id } ) }
 	}
 	/// Encrypt and generate packet
-	pub fn gen_packet(&self, me: &Node, packet: NodePacket) -> Result<InternetPacket, RemoteNodeError> {
-		if let Some(session) = self.session {
+	pub fn gen_packet(&self, node_net_id: InternetID, packet: NodePacket) -> Result<InternetPacket, RemoteNodeError> {
+		if let Some(session) = &self.session {
 			if let Some(net_id) = session.net_id {
-				Ok(self.encrypt(packet)?.package(me.net_id, net_id))
+				Ok(self.encrypt(packet)?.package(node_net_id, net_id))
 			} else {
 				Err( RemoteNodeError::UnknownNetIdError )
 			}

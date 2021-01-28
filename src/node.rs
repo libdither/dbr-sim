@@ -36,16 +36,17 @@ impl CustomNode for Node {
 
 		for packet in incoming {
 			//let mut noise = builder.local_private_key(self.keypair.)
-			self.parse_packet(packet, &mut outgoing);
+			if let Err(err) = self.parse_packet(packet, &mut outgoing) {
+				println!("Failed to parse packet: {:?}", err);
+			}
 		}
 		while let Some(action) = self.actions_queue.pop_front() {
 			match action {
 				NodeAction::Bootstrap(net_id, node_id) => {
-					if let Some(remote) = self.peers.get(&node_id) {
-						if remote.session_active() {
-							if let Ok(packet) = remote.gen_packet(&self, NodePacket::RequestPings(10)) {
-								outgoing.push(packet);
-							}
+					let remote = self.peers.entry(node_id).or_insert(RemoteNode::new(node_id));
+					if remote.session_active() {
+						if let Ok(packet) = remote.gen_packet(self.net_id, NodePacket::RequestPings(10)) {
+							outgoing.push(packet);
 						}
 					}
 				},
@@ -63,7 +64,7 @@ impl CustomNode for Node {
 	}
 }
 #[derive(Error, Debug)]
-enum PacketParseError {
+pub enum PacketParseError {
     #[error("There is no known session: {session_id:?}")]
 	UnknownSession { session_id: SessionID },
 	#[error("InternetPacket from {from:?} was addressed to {intended_dest:?}, not me")]
@@ -107,7 +108,8 @@ impl Node {
 					if recipient == self.node_id {
 						// If receive a Handshake Request, acknowledge it
 						let remote = self.peers.entry(signer).or_insert(RemoteNode::new(recipient));
-						let acknowledge_packet = remote.gen_acknowledgement(&mut self, recipient, session_id, signer);
+						let acknowledge_packet = remote.gen_acknowledgement(recipient, session_id, signer);
+						self.sessions.insert(session_id, signer); // Register to SessionID index
 						outgoing.push(acknowledge_packet.package(self.net_id, packet.src_addr));
 					} else {
 						return Err( PacketParseError::InvalidHandshakeRecipient { node_id: recipient } )
@@ -115,11 +117,9 @@ impl Node {
 				},
 				Acknowledge { session_id, acknowledger } => {
 					// If receive an Acknowledge request, validate Handshake previously sent out
-					if let Some(remote) = self.peers.get(&acknowledger) {
-						remote.validate_handshake(&mut self, session_id, acknowledger);
-					} else {
-						return Err( PacketParseError::UnknownAcknowledgement { from: acknowledger } )
-					}
+					let remote = self.peers.get_mut(&acknowledger).ok_or(PacketParseError::UnknownAcknowledgement { from: acknowledger })?;
+					remote.validate_handshake(session_id, acknowledger)?;
+					self.sessions.insert(session_id, acknowledger); // Register to SessionID index
 				},
 				Session { session_id, packet: node_packet } => {
 					log::info!("Node {} received packet ({:?}) from InternetID:{}", self.node_id, node_packet, packet.src_addr);
@@ -127,7 +127,7 @@ impl Node {
 					let remote = self.peers.get(remote_node_id).ok_or(PacketParseError::InvalidRemoteButSessionExists {node_id: remote_node_id.clone()})?;
 					match node_packet {
 						NodePacket::Ping => {
-							outgoing.push(remote.gen_packet(self, NodePacket::PingResponse)?);
+							outgoing.push(remote.gen_packet(self.net_id, NodePacket::PingResponse)?);
 						},
 						NodePacket::PingResponse => {
 							// TODO: Log the time it too between Ping and PingResponse
