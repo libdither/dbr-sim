@@ -1,8 +1,7 @@
 use crate::internet::{InternetID, InternetPacket};
-use crate::node::Node;
 
 pub type NodeID = u8;
-pub type SessionID = u128;
+pub type SessionID = u32;
 
 pub type RouteCoord = (usize, usize);
 
@@ -25,36 +24,8 @@ pub enum NodePacket {
 	RouteError()
 }
 
-
-/*
-impl NodePacket {
-	pub fn package(self, node: &Node, dest: InternetID) -> InternetPacket  {
-		
-	}
-	pub fn unpackage(node: &Node, packet: InternetPacket) -> Result<Self, PacketParseError> {
-		let encryption: NodeEncryption = serde_json::from_slice(&packet.data).expect("Failed to decode json");
-		match encryption {
-			NodeEncryption::Handshake(node_id, session_id) => {
-				if let Some(remote) = node.sessions.get(&session_id) {
-					Ok(encrypted.data)
-				} else {
-					Err(PacketParseError::SymmetricError { session_id })
-				}
-			},
-			NodeEncryption::Session(session_id, packet) => {
-				if let Some(remote) = node.peers.get(&node_id) {
-					Ok(packet)
-				} else {
-					Err(PacketParseError::AsymmetricError { node_id })
-				}
-			}
-		}
-	}
-}
-*/
-
 #[derive(Debug, Default)]
-struct RemoteSession {
+pub struct RemoteSession {
 	//pub_key: PublicKey,
 	//noise_session: Option<snow::TransportState>,
 	session_id: SessionID, // All connections must have a SessionID for encryption
@@ -72,7 +43,7 @@ impl RemoteSession {
 pub struct RemoteNode {
 	node_id: NodeID, // The ID of the remote node
 	route_coord: Option<RouteCoord>, // Last queried Route Coordinates
-	session: Option<RemoteSession>, // Session object, is None if no connection is active
+	pub session: Option<RemoteSession>, // Session object, is None if no connection is active
 }
 
 use thiserror::Error;
@@ -95,15 +66,20 @@ impl RemoteNode {
 		}
 	}
 	pub fn session_active(&self) -> bool {
-		self.session.is_some()
+		if let Some(session) = &self.session {
+			!session.outdated_session
+		} else { false }
+	}
+	pub fn session_net_id(&self) -> Option<InternetID> {
+		self.session.as_ref().map(|s|s.net_id).flatten()
 	}
 	/// This function creates a NodeEncryption::Handshake object to be sent to a peer that secure communication should be established with
-	pub fn gen_handshake(&mut self, me: &Node) -> NodeEncryption {
+	pub fn gen_handshake(&mut self, my_node_id: NodeID) -> NodeEncryption {
 		let session_id = rand::random::<SessionID>();
 		let session = self.session.get_or_insert(RemoteSession::default());
 		session.session_id = session_id;
 		session.outdated_session = true;
-		NodeEncryption::Handshake { recipient: self.node_id, session_id, signer: me.node_id }
+		NodeEncryption::Handshake { recipient: self.node_id, session_id, signer: my_node_id }
 	}
 	/// Acknowledge a NodeEncryption::Handshake and generate a NodeEncryption::Acknowledge to send back
 	pub fn gen_acknowledgement(&mut self, recipient: NodeID, session_id: SessionID, signer: NodeID) -> NodeEncryption {
@@ -129,7 +105,7 @@ impl RemoteNode {
 		} else { Err( RemoteNodeError::NoSessionError { node_id: self.node_id } ) }
 	}
 	/// Encrypt and generate packet
-	pub fn gen_packet(&self, node_net_id: InternetID, packet: NodePacket) -> Result<InternetPacket, RemoteNodeError> {
+	pub fn gen_direct(&self, node_net_id: InternetID, packet: NodePacket) -> Result<InternetPacket, RemoteNodeError> {
 		if let Some(session) = &self.session {
 			if let Some(net_id) = session.net_id {
 				Ok(self.encrypt(packet)?.package(node_net_id, net_id))

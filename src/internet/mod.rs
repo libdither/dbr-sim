@@ -64,7 +64,6 @@ impl<CN: CustomNode> InternetSim<CN> {
 				// Get Packets going to node
 				let incoming_packets = self.router.tick_node(node.net_id());
 				// Get packets coming from node
-				if incoming_packets.len() > 0 { log::debug!("Node: {:?} Receiving {:?}", node.net_id(), incoming_packets); }
 				let outgoing_packets = node.tick(incoming_packets);
 				// Send packets through the router
 				self.router.add_packets(outgoing_packets);

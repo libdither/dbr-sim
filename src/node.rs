@@ -1,17 +1,24 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap};
 
 pub use crate::internet::{CustomNode, InternetID, InternetPacket};
 
 mod types;
 pub use types::{NodeID, SessionID, RouteCoord, NodePacket, NodeEncryption, RemoteNode, RemoteNodeError};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum NodeAction {
-	Bootstrap(InternetID, NodeID),
-	Connect(NodeID),
+	Bootstrap,
+	Connect,
+}
+#[derive(Debug, Clone)]
+/// A condition that should be satisfied before an action is executed
+pub enum NodeActionCondition {
+	DirectSession(NodeID, InternetID), // Has direct Internet Connection
+	IndirectSession(NodeID), // Has routed connection
+	None,
 }
 
 #[derive(Debug)]
@@ -24,10 +31,10 @@ pub struct Node {
 
 	pub peers: HashMap<NodeID, RemoteNode>,
 	pub sessions: HashMap<SessionID, NodeID>,
-	actions_queue: VecDeque<NodeAction>,
+	actions_queue: Vec<(NodeAction, NodeActionCondition)>, // Actions will wait here until NodeID session is established
 }
 impl CustomNode for Node {
-	type CustomNodeAction = NodeAction;
+	type CustomNodeAction = (NodeAction, NodeActionCondition);
 	fn net_id(&self) -> InternetID {
 		self.net_id
 	}
@@ -40,27 +47,65 @@ impl CustomNode for Node {
 				println!("Failed to parse packet: {:?}", err);
 			}
 		}
-		while let Some(action) = self.actions_queue.pop_front() {
-			match action {
-				NodeAction::Bootstrap(net_id, node_id) => {
-					let remote = self.peers.entry(node_id).or_insert(RemoteNode::new(node_id));
-					if remote.session_active() {
-						if let Ok(packet) = remote.gen_packet(self.net_id, NodePacket::RequestPings(10)) {
-							outgoing.push(packet);
-						}
+
+		// Yield actions that are ready to be executed
+		let mut aq = self.actions_queue.clone();
+		let actions = aq.drain_filter(|(action, condition)|{
+			match condition {
+				// Init handshake and wait until direct connection is established
+				NodeActionCondition::DirectSession(node_id, net_id) => {
+					if let Some(remote) = self.peers.get(node_id) {
+						remote.session_active()
+					} else {
+						let remote = self.peers.entry(*node_id).or_insert(RemoteNode::new(*node_id));
+						outgoing.push(remote.gen_handshake(self.node_id).package(self.net_id, *net_id));
+						false
 					}
 				},
-				NodeAction::Connect(node) => {
-					log::info!("Outgoing Connection");
-				}
+				// Find RouteCoord, init onion route and wait until established
+				NodeActionCondition::IndirectSession(node_id) => {
+					/*match action {
+						NodeAction::Connect => {
+							
+						},
+						_ => { log::error!("NodeAction {:?} cannot be paired with NodeActionCondition {:?}", action, condition); true }
+					}*/
+					true
+				},
+				NodeActionCondition::None => { true },
+			}
+		}).collect::<Vec<_>>();
+		for (action, condition) in actions.iter() {
+			match condition {
+				// Init handshake and wait until direct connection is established
+				NodeActionCondition::DirectSession(node_id, net_id) => {
+					
+					if let Some(remote) = self.peers.get(node_id) {
+						match action {
+							NodeAction::Bootstrap => {
+								match remote.gen_direct(self.net_id, NodePacket::RequestPings(10)) {
+									Ok(packet) => { outgoing.push(packet) },
+									Err(RemoteNodeError::NoSessionError {..} ) => { log::error!("No direct session at remote node even though DirectSession condition passed") },
+									Err(e) => { log::error!("Direct session condition error: {:?}", e) },
+								}
+							}
+							_ => { log::error!("Invalid NodeAction / NodeActionCondition pair"); },
+						}
+						
+					} else { log::error!("Remote doesn't exist even though DirectSession condition passed"); }
+				},
+				// Find RouteCoord, init onion route and wait until established
+				_ => { log::warn!("Unsupportd NodeActionCondition") }
 			}
 		}
+		self.actions_queue = aq;
+
 		self.ticks += 1;
 		
 		outgoing
 	}
-	fn action(&mut self, action: NodeAction) {
-		self.actions_queue.push_back(action);
+	fn action(&mut self, action: (NodeAction, NodeActionCondition)) {
+		self.actions_queue.push(action);
 	}
 }
 #[derive(Error, Debug)]
@@ -103,19 +148,24 @@ impl Node {
 
 		if packet.dest_addr == self.net_id {
 			use NodeEncryption::*;
-			match NodeEncryption::unpackage(&packet)? {
+			let encrypted = NodeEncryption::unpackage(&packet)?;
+			log::info!("{:?} Received Packet: {:?}", self.node_id, encrypted);
+			match encrypted {
 				Handshake { recipient, session_id, signer } => {
+					log::trace!("Received handshake from node: {:?}", signer);
 					if recipient == self.node_id {
 						// If receive a Handshake Request, acknowledge it
 						let remote = self.peers.entry(signer).or_insert(RemoteNode::new(recipient));
 						let acknowledge_packet = remote.gen_acknowledgement(recipient, session_id, signer);
 						self.sessions.insert(session_id, signer); // Register to SessionID index
+						log::trace!("Sending Ack packet: {:?}", acknowledge_packet);
 						outgoing.push(acknowledge_packet.package(self.net_id, packet.src_addr));
 					} else {
 						return Err( PacketParseError::InvalidHandshakeRecipient { node_id: recipient } )
 					}
 				},
 				Acknowledge { session_id, acknowledger } => {
+					log::trace!("Received acknowledgement from node: {:?}", acknowledger);
 					// If receive an Acknowledge request, validate Handshake previously sent out
 					let remote = self.peers.get_mut(&acknowledger).ok_or(PacketParseError::UnknownAcknowledgement { from: acknowledger })?;
 					remote.validate_handshake(session_id, acknowledger)?;
@@ -127,13 +177,15 @@ impl Node {
 					let remote = self.peers.get(remote_node_id).ok_or(PacketParseError::InvalidRemoteButSessionExists {node_id: remote_node_id.clone()})?;
 					match node_packet {
 						NodePacket::Ping => {
-							outgoing.push(remote.gen_packet(self.net_id, NodePacket::PingResponse)?);
+							outgoing.push(remote.gen_direct(self.net_id, NodePacket::PingResponse)?);
 						},
 						NodePacket::PingResponse => {
+							
 							// TODO: Log the time it too between Ping and PingResponse
 							//self.ping
 						},
 						NodePacket::RequestPings(num) => {
+							log::trace!("Receieved RequestPings from {:?}", remote_node_id);
 							// TODO: Find nodes that might be close to requester and ask them to ping requester
 						},
 						NodePacket::WantPing(net_id, node_id) => {

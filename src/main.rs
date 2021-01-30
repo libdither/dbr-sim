@@ -2,7 +2,6 @@
 
 #[macro_use]
 extern crate serde;
-#[macro_use]
 extern crate log;
 #[macro_use]
 extern crate thiserror;
@@ -12,7 +11,7 @@ use std::io::{self, prelude::*};
 pub mod internet;
 use internet::{InternetID, InternetSim};
 pub mod node;
-use node::{Node, NodeAction, NodeID};
+use node::{Node, NodeAction, NodeActionCondition, NodeID};
 
 fn main() {
 	env_logger::init();
@@ -21,6 +20,9 @@ fn main() {
 	let mut internet = InternetSim::new();
 	let node = Node::new(0, internet.lease());
 	internet.add_node(node);
+	let node2 = Node::new(1, internet.lease());
+	internet.add_node(node2);
+	internet.node_action(1, (NodeAction::Bootstrap, NodeActionCondition::DirectSession(0, 0))).unwrap();
 
 	let stdin = io::stdin();
 	let split_regex = fancy_regex::Regex::new(r#"((?<=")[^"]*(?=")|[^" ]+)"#).unwrap();
@@ -86,14 +88,16 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 						if let Some(Ok(bootstrap_net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
 							if let Some(Ok(bootstrap_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
 								println!("Bootstrapping node {:?} to node {:?}", net_id, bootstrap_net_id);
-								internet.node_action(net_id, NodeAction::Bootstrap(bootstrap_net_id, bootstrap_node_id))?;
+								let action = (NodeAction::Bootstrap, NodeActionCondition::DirectSession(bootstrap_node_id, bootstrap_net_id));
+								internet.node_action(net_id, action)?;
 							} else { Err("node: bootstrap: requires a NodeID to establish secure connection")? }
 						} else { Err("node: bootstrap: requires InternetID to bootstrap off of")? }
 					}
 					// Initiate a connection and send some message
 					Some(&"send") => {
 						if let Some(Ok(num)) = command.next().map(|s|s.parse::<NodeID>()) {
-							internet.node_action(net_id, NodeAction::Connect(num))?;
+							let action = (NodeAction::Connect, NodeActionCondition::IndirectSession(num));
+							internet.node_action(net_id, action)?;
 						}
 					}
 					Some(&"info") => {
