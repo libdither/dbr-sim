@@ -102,6 +102,8 @@ impl CustomNode for Node {
 
 		self.ticks += 1;
 		
+
+		if outgoing.len() > 0 { log::trace!("outgoing from Node({:?}): {:?}", self.node_id, outgoing); }
 		outgoing
 	}
 	fn action(&mut self, action: (NodeAction, NodeActionCondition)) {
@@ -144,21 +146,17 @@ impl Node {
 		}
 	}
 	pub fn parse_packet(&mut self, packet: InternetPacket, outgoing: &mut Vec<InternetPacket>) -> Result<(), PacketParseError> {
-		let mut outgoing: Vec<InternetPacket> = Default::default();
-
 		if packet.dest_addr == self.net_id {
 			use NodeEncryption::*;
 			let encrypted = NodeEncryption::unpackage(&packet)?;
-			log::info!("{:?} Received Packet: {:?}", self.node_id, encrypted);
+			log::info!("Node({:?}) Received Packet: {:?}", self.node_id, encrypted);
 			match encrypted {
 				Handshake { recipient, session_id, signer } => {
-					log::trace!("Received handshake from node: {:?}", signer);
 					if recipient == self.node_id {
 						// If receive a Handshake Request, acknowledge it
 						let remote = self.peers.entry(signer).or_insert(RemoteNode::new(recipient));
 						let acknowledge_packet = remote.gen_acknowledgement(recipient, session_id, signer);
 						self.sessions.insert(session_id, signer); // Register to SessionID index
-						log::trace!("Sending Ack packet: {:?}", acknowledge_packet);
 						outgoing.push(acknowledge_packet.package(self.net_id, packet.src_addr));
 					} else {
 						return Err( PacketParseError::InvalidHandshakeRecipient { node_id: recipient } )
