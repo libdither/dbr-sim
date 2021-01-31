@@ -157,16 +157,17 @@ impl Node {
 						let remote = self.peers.entry(signer).or_insert(RemoteNode::new(recipient));
 						let acknowledge_packet = remote.gen_acknowledgement(recipient, session_id, signer);
 						self.sessions.insert(session_id, signer); // Register to SessionID index
+						remote.assign_net_id(packet.src_addr);
 						outgoing.push(acknowledge_packet.package(self.net_id, packet.src_addr));
 					} else {
 						return Err( PacketParseError::InvalidHandshakeRecipient { node_id: recipient } )
 					}
 				},
 				Acknowledge { session_id, acknowledger } => {
-					log::trace!("Received acknowledgement from node: {:?}", acknowledger);
 					// If receive an Acknowledge request, validate Handshake previously sent out
 					let remote = self.peers.get_mut(&acknowledger).ok_or(PacketParseError::UnknownAcknowledgement { from: acknowledger })?;
 					remote.validate_handshake(session_id, acknowledger)?;
+					remote.assign_net_id(packet.src_addr);
 					self.sessions.insert(session_id, acknowledger); // Register to SessionID index
 				},
 				Session { session_id, packet: node_packet } => {

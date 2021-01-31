@@ -73,6 +73,11 @@ impl RemoteNode {
 	pub fn session_net_id(&self) -> Option<InternetID> {
 		self.session.as_ref().map(|s|s.net_id).flatten()
 	}
+	pub fn assign_net_id(&mut self, net_id: InternetID) {
+		if let Some(session) = &mut self.session {
+			session.net_id = Some(net_id);
+		}
+	}
 	/// This function creates a NodeEncryption::Handshake object to be sent to a peer that secure communication should be established with
 	pub fn gen_handshake(&mut self, my_node_id: NodeID) -> NodeEncryption {
 		let session_id = rand::random::<SessionID>();
