@@ -102,8 +102,6 @@ impl CustomNode for Node {
 
 		self.ticks += 1;
 		
-
-		if outgoing.len() > 0 { log::trace!("outgoing from Node({:?}): {:?}", self.node_id, outgoing); }
 		outgoing
 	}
 	fn action(&mut self, action: (NodeAction, NodeActionCondition)) {
@@ -171,8 +169,8 @@ impl Node {
 					self.sessions.insert(session_id, acknowledger); // Register to SessionID index
 				},
 				Session { session_id, packet: node_packet } => {
-					log::info!("Node {} received packet ({:?}) from InternetID:{}", self.node_id, node_packet, packet.src_addr);
 					let remote_node_id = self.sessions.get(&session_id).ok_or(PacketParseError::UnknownSession { session_id })?;
+					log::info!("Node({}) received NodePacket::{:?} from NodeID({}), InternetID({})", self.node_id, node_packet, remote_node_id, packet.src_addr);
 					let remote = self.peers.get(remote_node_id).ok_or(PacketParseError::InvalidRemoteButSessionExists {node_id: remote_node_id.clone()})?;
 					match node_packet {
 						NodePacket::Ping => {
