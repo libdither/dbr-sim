@@ -5,7 +5,6 @@ pub type SessionID = u32;
 
 pub type RouteCoord = (usize, usize);
 
-
 #[derive(Serialize, Deserialize, Debug)]
 pub enum NodePacket {
 	// Sent to other Nodes. Expects PingResponse returned
@@ -14,7 +13,7 @@ pub enum NodePacket {
 	PingResponse,
 
 	// Request to a peer for them to request their peers to ping me
-	RequestPings(u32), // u32: max number of pings
+	RequestPings(usize), // u32: max number of pings
 	// Tell a peer that this node wants a ping (implying a potential direct connection)
 	WantPing(InternetID, NodeID),
 
@@ -110,10 +109,10 @@ impl RemoteNode {
 		} else { Err( RemoteNodeError::NoSessionError { node_id: self.node_id } ) }
 	}
 	/// Encrypt and generate packet
-	pub fn gen_direct(&self, node_net_id: InternetID, packet: NodePacket) -> Result<InternetPacket, RemoteNodeError> {
+	pub fn gen_direct(&self, my_net_id: InternetID, packet: NodePacket) -> Result<InternetPacket, RemoteNodeError> {
 		if let Some(session) = &self.session {
 			if let Some(net_id) = session.net_id {
-				Ok(self.encrypt(packet)?.package(node_net_id, net_id))
+				Ok(self.encrypt(packet)?.package(my_net_id, net_id))
 			} else {
 				Err( RemoteNodeError::UnknownNetIdError )
 			}

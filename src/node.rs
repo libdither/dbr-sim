@@ -1,7 +1,11 @@
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
+const MAX_REQUEST_PINGS: usize = 10;
+
 use std::collections::{HashMap};
+
+use priority_queue::PriorityQueue;
 
 pub use crate::internet::{CustomNode, InternetID, InternetPacket};
 
@@ -31,7 +35,8 @@ pub struct Node {
 
 	pub peers: HashMap<NodeID, RemoteNode>,
 	pub sessions: HashMap<SessionID, NodeID>,
-	actions_queue: Vec<(NodeAction, NodeActionCondition)>, // Actions will wait here until NodeID session is established
+	pub direct_nodes: PriorityQueue<SessionID, u64>, // Sort Queue SessionID by u64::MAX - distance (shortest distance = highest priority)
+	pub actions_queue: Vec<(NodeAction, NodeActionCondition)>, // Actions will wait here until NodeID session is established
 }
 impl CustomNode for Node {
 	type CustomNodeAction = (NodeAction, NodeActionCondition);
@@ -124,6 +129,8 @@ pub enum PacketParseError {
 	SerdeDecodeError(#[from] serde_json::Error),
 	#[error("Session entry exists, but node entry does not {node_id:?}")]
 	InvalidRemoteButSessionExists { node_id: NodeID },
+	#[error("There are no known directly connected nodes")]
+	NoDirectNodes,
 }
 
 impl Node {
@@ -140,13 +147,14 @@ impl Node {
 
 			peers: Default::default(),
 			sessions: Default::default(),
+			direct_nodes: Default::default(),
 			actions_queue: Default::default(),
 		}
 	}
-	pub fn parse_packet(&mut self, packet: InternetPacket, outgoing: &mut Vec<InternetPacket>) -> Result<(), PacketParseError> {
-		if packet.dest_addr == self.net_id {
+	pub fn parse_packet(&mut self, received_packet: InternetPacket, outgoing: &mut Vec<InternetPacket>) -> Result<(), PacketParseError> {
+		if received_packet.dest_addr == self.net_id {
 			use NodeEncryption::*;
-			let encrypted = NodeEncryption::unpackage(&packet)?;
+			let encrypted = NodeEncryption::unpackage(&received_packet)?;
 			log::info!("Node({:?}) Received Packet: {:?}", self.node_id, encrypted);
 			match encrypted {
 				Handshake { recipient, session_id, signer } => {
@@ -155,8 +163,8 @@ impl Node {
 						let remote = self.peers.entry(signer).or_insert(RemoteNode::new(recipient));
 						let acknowledge_packet = remote.gen_acknowledgement(recipient, session_id, signer);
 						self.sessions.insert(session_id, signer); // Register to SessionID index
-						remote.assign_net_id(packet.src_addr);
-						outgoing.push(acknowledge_packet.package(self.net_id, packet.src_addr));
+						remote.assign_net_id(received_packet.src_addr);
+						outgoing.push(acknowledge_packet.package(self.net_id, received_packet.src_addr));
 					} else {
 						return Err( PacketParseError::InvalidHandshakeRecipient { node_id: recipient } )
 					}
@@ -165,28 +173,39 @@ impl Node {
 					// If receive an Acknowledge request, validate Handshake previously sent out
 					let remote = self.peers.get_mut(&acknowledger).ok_or(PacketParseError::UnknownAcknowledgement { from: acknowledger })?;
 					remote.validate_handshake(session_id, acknowledger)?;
-					remote.assign_net_id(packet.src_addr);
+					remote.assign_net_id(received_packet.src_addr);
 					self.sessions.insert(session_id, acknowledger); // Register to SessionID index
 				},
 				Session { session_id, packet: node_packet } => {
 					let remote_node_id = self.sessions.get(&session_id).ok_or(PacketParseError::UnknownSession { session_id })?;
-					log::info!("Node({}) received NodePacket::{:?} from NodeID({}), InternetID({})", self.node_id, node_packet, remote_node_id, packet.src_addr);
-					let remote = self.peers.get(remote_node_id).ok_or(PacketParseError::InvalidRemoteButSessionExists {node_id: remote_node_id.clone()})?;
+					log::info!("Node({}) received NodePacket::{:?} from NodeID({}), InternetID({})", self.node_id, node_packet, remote_node_id, received_packet.src_addr);
+					let return_remote = self.peers.get(remote_node_id).ok_or(PacketParseError::InvalidRemoteButSessionExists {node_id: remote_node_id.clone()})?;
 					match node_packet {
 						NodePacket::Ping => {
-							outgoing.push(remote.gen_direct(self.net_id, NodePacket::PingResponse)?);
+							outgoing.push(return_remote.gen_direct(self.net_id, NodePacket::PingResponse)?);
 						},
 						NodePacket::PingResponse => {
-							
+							//outgoing.push(return_remote.gen_direct(self.net_id, )?);
 							// TODO: Log the time it too between Ping and PingResponse
 							//self.ping
 						},
-						NodePacket::RequestPings(num) => {
+						NodePacket::RequestPings(requests) => {
 							log::trace!("Receieved RequestPings from {:?}", remote_node_id);
+							// Loop through first min(N,MAX_REQUEST_PINGS) items of priorityqueue
+							let num_requests = usize::min(requests, MAX_REQUEST_PINGS); // Maximum of 10 requests
+							for (session_id, _) in self.direct_nodes.iter().take(num_requests) {
+								// Try get node
+								let node_id = self.sessions.get(session_id).ok_or(PacketParseError::UnknownSession { session_id: *session_id })?;
+								// Try get remote
+								let mut remote = self.peers.get(node_id).ok_or(PacketParseError::InvalidRemoteButSessionExists { node_id: *node_id })?;
+								// Generate packet sent to nearby remotes that this node wants to be pinged
+								let packet = remote.gen_direct(self.net_id, NodePacket::WantPing(received_packet.dest_addr, *remote_node_id))?;
+								outgoing.push(packet);
+							}
 							// TODO: Find nodes that might be close to requester and ask them to ping requester
 						},
 						NodePacket::WantPing(net_id, node_id) => {
-							
+							outgoing.push(return_remote.gen_direct(self.net_id, NodePacket::Ping)?);
 						},
 						NodePacket::Route(net_id, data) => {
 							// outgoing.push(value)
@@ -196,7 +215,7 @@ impl Node {
 				}
 			}
 		} else {
-			return Err( PacketParseError::InvalidNetworkRecipient { from: packet.src_addr, intended_dest: packet.dest_addr } )
+			return Err( PacketParseError::InvalidNetworkRecipient { from: received_packet.src_addr, intended_dest: received_packet.dest_addr } )
 		}
 		Ok(())
 	}
