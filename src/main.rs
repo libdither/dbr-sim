@@ -5,13 +5,15 @@ extern crate serde;
 extern crate log;
 #[macro_use]
 extern crate thiserror;
+#[macro_use]
+extern crate derivative;
 
 use std::io::{self, prelude::*};
 
 pub mod internet;
-use internet::{InternetID, InternetSim};
+use internet::{InternetID, InternetSim, CustomNode};
 pub mod node;
-use node::{Node, NodeAction, NodeActionCondition, NodeID};
+use node::{Node, NodeAction, NodeID, NodeActionCondition};
 
 fn main() {
 	env_logger::init();
@@ -20,9 +22,10 @@ fn main() {
 	let mut internet = InternetSim::new();
 	let node = Node::new(0, internet.lease());
 	internet.add_node(node);
-	let node2 = Node::new(1, internet.lease());
+	let mut node2 = Node::new(1, internet.lease());
+	node2.action(NodeAction::Connect(0, 0));
+	node2.action(NodeAction::Await( NodeActionCondition::DirectSession(0), Box::new(NodeAction::Bootstrap(0)) ));
 	internet.add_node(node2);
-	internet.node_action(1, (NodeAction::Bootstrap, NodeActionCondition::DirectSession(0, 0))).unwrap();
 
 	let stdin = io::stdin();
 	let split_regex = fancy_regex::Regex::new(r#"((?<=")[^"]*(?=")|[^" ]+)"#).unwrap();
@@ -59,16 +62,16 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 				internet.add_node(node);
 			} else { Err("add: requires second argument to be NodeID")? }
 		},
-		Some(&"tick") => {
-			if let Some(Ok(num_ticks)) = command.next().map(|s|s.parse::<usize>()) {
-				println!("Running {} ticks", num_ticks);
-				internet.run(num_ticks);
-			}
-		},
 		// Removing Nodes
 		Some(&"del") => {
 			if let Some(Ok(net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
 				internet.del_node(net_id);
+			}
+		},
+		Some(&"tick") => {
+			if let Some(Ok(num_ticks)) = command.next().map(|s|s.parse::<usize>()) {
+				println!("Running {} ticks", num_ticks);
+				internet.run(num_ticks);
 			}
 		},
 		// Configuring network
@@ -81,34 +84,42 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 		},
 		// Node subcommand
 		Some(&"node") => {
-			if let Some(Ok(net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
-				match command.next() {
-					// Bootstrap a node onto the network
-					Some(&"bootstrap") => {
-						if let Some(Ok(bootstrap_net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
-							if let Some(Ok(bootstrap_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
-								println!("Bootstrapping node {:?} to node {:?}", net_id, bootstrap_net_id);
-								let action = (NodeAction::Bootstrap, NodeActionCondition::DirectSession(bootstrap_node_id, bootstrap_net_id));
-								internet.node_action(net_id, action)?;
-							} else { Err("node: bootstrap: requires a NodeID to establish secure connection")? }
+			let net_id = if let Some(Ok(net_id)) = command.next().map(|s|s.parse::<InternetID>()) { net_id } else { return Err("node: must pass valid InternetID as second argument to identify specific node")? };
+			let node = if let Some(node) = internet.node_mut(net_id) { node } else { return Err("node: no node at that network address")? };
+			match command.next() {
+				// Bootstrap a node onto the network
+				Some(&"connect") | Some(&"conn") => {
+					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
+						if let Some(Ok(remote_net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
+							println!("Connecting {:?} to Node(NodeID({:?}), InternetID({:?}))", node.node_id, remote_node_id, remote_net_id);
+							let action = NodeAction::Connect(remote_node_id, remote_net_id);
+							node.action(action);
 						} else { Err("node: bootstrap: requires InternetID to bootstrap off of")? }
-					}
-					// Initiate a connection and send some message
-					Some(&"send") => {
-						if let Some(Ok(num)) = command.next().map(|s|s.parse::<NodeID>()) {
-							let action = (NodeAction::Connect, NodeActionCondition::IndirectSession(num));
-							internet.node_action(net_id, action)?;
+					} else { Err("node: bootstrap: requires a NodeID to establish secure connection")? }
+				},
+				Some(&"bootstrap") | Some(&"boot") => {
+					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
+						println!("Bootstrapping node NodeID({:?}) to NodeID({:?})", node.node_id, remote_node_id);
+						let action = NodeAction::Bootstrap(remote_node_id);
+						node.action(action);
+					} else { Err("node: bootstrap: requires a NodeID to establish secure connection")? }
+				}
+				// Initiate a connection and send some message
+				Some(&"ping") => {
+					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
+						if let Some(Ok(num)) = command.next().map(|s|s.parse::<usize>()) {
+							node.action(NodeAction::Ping(remote_node_id, num));
 						}
 					}
-					Some(&"info") => {
-						println!("Node: {:#?}", internet.node(net_id).ok_or("node: info: No node matches this InternetID")?);
-					}
-					Some(_) => Err(format!("node: unknown node command: {:?}", input[2]))?,
-					None => Err(format!("node: requires subcommand"))?
 				}
-			} else { println!("node: Must pass valid InternetID as second argument to identify specific node") }
+				Some(&"info") => {
+					println!("Node: {:#?}", internet.node(net_id).ok_or("node: info: No node matches this InternetID")?);
+				}
+				Some(_) => Err(format!("node: unknown node command: {:?}", input[2]))?,
+				None => Err(format!("node: requires subcommand"))?
+			}
 		},
-		Some(_) => println!("Invalid Command: {:?}", input),
+		Some(_) => Err(format!("Invalid Command: {:?}", input))?,
 		None => {},
 	}
 	Ok(())
