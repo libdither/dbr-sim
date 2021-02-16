@@ -158,6 +158,7 @@ impl Node {
 				for i in 0..num_pings {
 					let ping_packet = session.direct_mut()?.gen_ping(self.ticks);
 					let packet = session.encrypt(ping_packet).package(self.net_id, remote_net_id);
+					outgoing.push(packet);
 				}
 			},
 			NodeAction::Route(remote_node_id, remote_route_coord ) => {},
@@ -166,7 +167,10 @@ impl Node {
 					// Yields if there is a session
 					NodeActionCondition::Session(node_id) => self.peers.get(&node_id).ok_or(ActionError::NoRemoteError{ node_id })?.session_active(),
 					// Yields if there is a session and it is direct
-					NodeActionCondition::DirectSession(node_id) => self.peers.get(&node_id).ok_or(ActionError::NoRemoteError{ node_id })?.session()?.is_direct(),
+					NodeActionCondition::DirectSession(node_id) => {
+						let remote = self.peers.get(&node_id).ok_or(ActionError::NoRemoteError{ node_id })?;
+						remote.session()?.is_direct() && remote.session_active()
+					},
 				});
 			}
 			// _ => { log::error!("Invalid NodeAction / NodeActionCondition pair"); },
@@ -177,9 +181,9 @@ impl Node {
 		if received_packet.dest_addr == self.net_id {
 			use NodeEncryption::*;
 			let encrypted = NodeEncryption::unpackage(&received_packet)?;
-			log::info!("Node({:?}) Received Packet: {:?}", self.node_id, encrypted);
 			match encrypted {
 				Handshake { recipient, session_id, signer } => {
+					log::info!("Node({:?}) Received Handshake: {:?}", self.node_id, encrypted);
 					if recipient == self.node_id {
 						// If receive a Handshake Request, acknowledge it
 						let remote = self.peers.entry(signer).or_insert(RemoteNode::new(recipient));
@@ -191,6 +195,7 @@ impl Node {
 					}
 				},
 				Acknowledge { session_id, acknowledger } => {
+					log::info!("Node({:?}) Received Acknowledgement: {:?}", self.node_id, encrypted);
 					// If receive an Acknowledge request, validate Handshake previously sent out
 					let remote = self.peers.get_mut(&acknowledger).ok_or(PacketParseError::UnknownAcknowledgement { from: acknowledger })?;
 					remote.validate_handshake(session_id, acknowledger)?;

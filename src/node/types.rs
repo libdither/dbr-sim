@@ -59,12 +59,12 @@ pub enum SessionError {
 pub struct DirectSession {
 	pub net_id: InternetID, // Internet Address
 	#[derivative(Debug="ignore")]
-	ping_queue: PriorityQueue<PingID, usize>, // Tuple represents (ID of ping, usize::MAX - time sent) 
+	ping_queue: PriorityQueue<PingID, Reverse<usize>>, // Tuple represents (ID of ping, priority by reversed time sent) 
 	average_dist: RouteScalar,
 	#[derivative(Debug="ignore")]
 	ping_avg: SimpleMovingAverage, // Moving average of ping times
 }
-
+use std::cmp::Reverse;
 impl DirectSession {
 	fn new(net_id: InternetID) -> Self {
 		Self {
@@ -77,7 +77,7 @@ impl DirectSession {
 	// Generate Ping Packet
 	pub fn gen_ping(&mut self, gen_time: usize) -> NodePacket {
 		let ping_id: PingID = rand::random();
-		self.ping_queue.push(ping_id, usize::MAX - gen_time);
+		self.ping_queue.push(ping_id, Reverse(gen_time));
 		// There shouldn't be more than 100 pings pending
 		if self.ping_queue.len() >= MAX_PENDING_PINGS {
 			self.ping_queue.pop();
@@ -86,8 +86,8 @@ impl DirectSession {
 	}
 	// Acknowledge Ping Response packet
 	pub fn acknowledge_ping(&mut self, ping_id: PingID, current_time: usize) -> Result<RouteScalar, SessionError> {
-		if let Some((_, priority)) = self.ping_queue.remove(&ping_id) {
-			let round_trip_time = priority - usize::MAX;
+		if let Some(( _, Reverse(time_sent) )) = self.ping_queue.remove(&ping_id) {
+			let round_trip_time = current_time - time_sent;
 			let distance = round_trip_time as f64 / 2.0;
 			self.average_dist = self.ping_avg.next(distance) as RouteScalar;
 			Ok(self.average_dist)

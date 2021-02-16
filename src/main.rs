@@ -24,7 +24,9 @@ fn main() {
 	internet.add_node(node);
 	let mut node2 = Node::new(1, internet.lease());
 	node2.action(NodeAction::Connect(0, 0));
-	node2.action(NodeAction::Await( NodeActionCondition::DirectSession(0), Box::new(NodeAction::Bootstrap(0)) ));
+	node2.action(NodeAction::Await(NodeActionCondition::DirectSession(0), Box::new(NodeAction::Ping(0, 3))));
+	//node2.action(NodeAction::Await( NodeActionCondition::DirectSession(0), Box::new(NodeAction::Bootstrap(0)) ));
+
 	internet.add_node(node2);
 
 	let stdin = io::stdin();
