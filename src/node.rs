@@ -29,8 +29,13 @@ pub enum NodeAction {
 	Ping(NodeID, usize), // Ping node X number of times
 	/// Establish a dynamic routed connection
 	Route(NodeID, RouteCoord),
-	/// Await for a condition to be fulfilled before running imbedded Action
-	Await(NodeActionCondition, Box<NodeAction>),
+	/// Condition for a condition to be fulfilled before running imbedded Action
+	Condition(NodeActionCondition, Box<NodeAction>),
+}
+impl NodeAction {
+	pub fn gen_condition(self, condition: NodeActionCondition) -> NodeAction {
+		NodeAction::Condition(condition, Box::new(self))
+	}
 }
 
 #[derive(Debug)]
@@ -71,7 +76,7 @@ impl CustomNode for Node {
 		self.actions_queue = aq;
 		for action in generated_actions.into_iter() {
 			match action {
-				NodeAction::Await(_, action) => self.actions_queue.push(*action),
+				NodeAction::Condition(_, action) => self.actions_queue.push(*action),
 				_ => {},
 			}
 		}
@@ -131,6 +136,10 @@ impl Node {
 			actions_queue: Default::default(),
 		}
 	}
+	pub fn with_action(mut self, action: NodeAction) -> Self {
+		self.actions_queue.push(action);
+		self
+	}
 	pub fn parse_action(&mut self, action: &NodeAction, outgoing: &mut Vec<InternetPacket>) -> Result<bool, ActionError> {
 		match action.clone() {
 			// Connect to remote node
@@ -162,7 +171,7 @@ impl Node {
 				}
 			},
 			NodeAction::Route(remote_node_id, remote_route_coord ) => {},
-			NodeAction::Await(condition, action) => {
+			NodeAction::Condition(condition, action) => {
 				return Ok(match condition {
 					// Yields if there is a session
 					NodeActionCondition::Session(node_id) => self.peers.get(&node_id).ok_or(ActionError::NoRemoteError{ node_id })?.session_active(),

@@ -22,12 +22,16 @@ fn main() {
 	let mut internet = InternetSim::new();
 	let node = Node::new(0, internet.lease());
 	internet.add_node(node);
-	let mut node2 = Node::new(1, internet.lease());
-	node2.action(NodeAction::Connect(0, 0));
-	node2.action(NodeAction::Await(NodeActionCondition::DirectSession(0), Box::new(NodeAction::Ping(0, 3))));
-	//node2.action(NodeAction::Await( NodeActionCondition::DirectSession(0), Box::new(NodeAction::Bootstrap(0)) ));
+	let mut node1 = Node::new(1, internet.lease());
+	node1.action(NodeAction::Connect(0, 0));
+	node1.action( NodeAction::Ping(0, 3).gen_condition(NodeActionCondition::DirectSession(0) ));
+	internet.add_node(node1);
 
+	let node2 = Node::new(2, internet.lease())
+		.with_action(NodeAction::Connect(0, 0))
+		.with_action(NodeAction::Ping(0, 3).gen_condition(NodeActionCondition::DirectSession(0)) );
 	internet.add_node(node2);
+
 
 	let stdin = io::stdin();
 	let split_regex = fancy_regex::Regex::new(r#"((?<=")[^"]*(?=")|[^" ]+)"#).unwrap();
@@ -102,7 +106,7 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 				Some(&"bootstrap") | Some(&"boot") => {
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
 						println!("Bootstrapping node NodeID({:?}) to NodeID({:?})", node.node_id, remote_node_id);
-						let action = NodeAction::Bootstrap(remote_node_id);
+						let action = NodeAction::Bootstrap(remote_node_id).gen_condition(NodeActionCondition::Session(remote_node_id));
 						node.action(action);
 					} else { Err("node: bootstrap: requires a NodeID to establish secure connection")? }
 				}
@@ -110,7 +114,7 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 				Some(&"ping") => {
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
 						if let Some(Ok(num)) = command.next().map(|s|s.parse::<usize>()) {
-							node.action(NodeAction::Ping(remote_node_id, num));
+							node.action(NodeAction::Ping(remote_node_id, num).gen_condition(NodeActionCondition::Session(remote_node_id)));
 						}
 					}
 				}
