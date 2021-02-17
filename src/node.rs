@@ -18,11 +18,14 @@ pub use types::{NodeID, SessionID, RouteCoord, NodePacket, NodeEncryption, Remot
 pub enum NodeActionCondition {
 	DirectSession(NodeID), // Has direct Internet Connection
 	Session(NodeID), // Has a session (Direct or Routed)
+	Timeout(usize), // Condition runs at some time in the future
 }
 #[derive(Debug, Clone)]
 pub enum NodeAction {
 	/// Connect
 	Connect(NodeID, InternetID),
+	/// Send Packet to NodeID
+	Packet(NodeID, NodePacket),
 	/// Bootstrap off of directly connected node
 	Bootstrap(NodeID),
 	/// Ping a node
@@ -59,6 +62,7 @@ impl CustomNode for Node {
 	fn tick(&mut self, incoming: Vec<InternetPacket>) -> Vec<InternetPacket> {
 		let mut outgoing: Vec<InternetPacket> = Vec::new();
 
+		// Parse Incoming Packets
 		for packet in incoming {
 			//let mut noise = builder.local_private_key(self.keypair.)
 			if let Err(err) = self.parse_packet(packet, &mut outgoing) {
@@ -66,6 +70,8 @@ impl CustomNode for Node {
 			}
 		}
 		
+		// Run actions in queue 
+		// This is kinda inefficient
 		let mut aq = self.actions_queue.clone();
 		let generated_actions = aq.drain_filter(|action| {
 			match self.parse_action(&action, &mut outgoing) {
@@ -74,6 +80,7 @@ impl CustomNode for Node {
 			}
 		}).collect::<Vec<_>>();
 		self.actions_queue = aq;
+		// Check for Yielded NodeAction::Condition and list embedded action in queue
 		for action in generated_actions.into_iter() {
 			match action {
 				NodeAction::Condition(_, action) => self.actions_queue.push(*action),
@@ -151,14 +158,15 @@ impl Node {
 					outgoing.push(packet);
 				}
 			},
+			NodeAction::Packet(remote_node_id, packet) => {
+				let remote = self.peers.get(&remote_node_id).ok_or(ActionError::NoRemoteError{node_id: remote_node_id})?;
+				outgoing.push(remote.gen_packet(self.net_id, packet)?);
+			},
 			// Bootstrap off of remote node
 			NodeAction::Bootstrap(remote_node_id) => {
 				let remote = self.peers.get(&remote_node_id).ok_or(ActionError::NoRemoteError{node_id: remote_node_id})?;
-				match remote.gen_packet(self.net_id, NodePacket::RequestPings(10)) {
-					Ok(packet) => { outgoing.push(packet) },
-					Err(RemoteNodeError::NoSessionError {..} ) => { log::error!("No direct session at remote node even though DirectSession condition passed") },
-					Err(e) => { log::error!("Direct session condition error: {:?}", e) },
-				}
+				let packet = remote.gen_packet(self.net_id, NodePacket::RequestPings(10))?;
+				outgoing.push(packet);
 			},
 			NodeAction::Ping(remote_node_id, num_pings) => {
 				let remote = self.peers.get_mut(&remote_node_id).ok_or(ActionError::NoRemoteError{node_id: remote_node_id})?;
@@ -180,6 +188,8 @@ impl Node {
 						let remote = self.peers.get(&node_id).ok_or(ActionError::NoRemoteError{ node_id })?;
 						remote.session()?.is_direct() && remote.session_active()
 					},
+					// Yields if it is at specified time
+					NodeActionCondition::Timeout(time) => self.ticks >= time,
 				});
 			}
 			// _ => { log::error!("Invalid NodeAction / NodeActionCondition pair"); },
@@ -209,19 +219,11 @@ impl Node {
 					let remote = self.peers.get_mut(&acknowledger).ok_or(PacketParseError::UnknownAcknowledgement { from: acknowledger })?;
 					remote.validate_handshake(session_id, acknowledger)?;
 					self.sessions.insert(session_id, acknowledger); // Register to SessionID index
-					// Ping node to decide whether to add it to the direct_nodes queue
-					/*if let SessionType::Direct(direct_session) = &remote.session()?.session_type {
-						if self.direct_nodes.len() < 10 {
-							let net_id = direct_session.net_id;
-							let remote_node_id = remote.node_id;
-							self.action(NodeAction::Ping(3));
-						}
-					}*/
 				},
 				Session { session_id, packet: node_packet } => {
-					let return_node_id = self.sessions.get(&session_id).ok_or(PacketParseError::UnknownSession { session_id })?;
+					let return_node_id = *self.sessions.get(&session_id).ok_or(PacketParseError::UnknownSession { session_id })?;
 					log::info!("Node({}) received NodePacket::{:?} from NodeID({}), InternetID({})", self.node_id, node_packet, return_node_id, received_packet.src_addr);
-					let return_remote = self.peers.get_mut(return_node_id).ok_or(PacketParseError::InvalidRemoteButSessionExists {node_id: return_node_id.clone()})?;
+					let return_remote = self.peers.get_mut(&return_node_id).ok_or(PacketParseError::InvalidRemoteButSessionExists {node_id: return_node_id.clone()})?;
 					match node_packet {
 						NodePacket::Ping(ping_id) => {
 							// Return packet
@@ -248,19 +250,19 @@ impl Node {
 								// Try get remote
 								let remote = self.peers.get(node_id).ok_or(PacketParseError::InvalidRemoteButSessionExists { node_id: *node_id })?;
 								// Generate packet sent to nearby remotes that this node wants to be pinged
-								let packet = remote.gen_packet(self.net_id, NodePacket::WantPing(received_packet.dest_addr, *return_node_id))?;
+								let packet = remote.gen_packet(self.net_id, NodePacket::WantPing(return_node_id, received_packet.dest_addr))?;
 								outgoing.push(packet);
 							}
 							// TODO: Find nodes that might be close to requester and ask them to ping requester
 						},
 						// Initiate Direct Handshakes with people who want pings
-						NodePacket::WantPing(net_id, node_id) => {
-							let mut remote_node = RemoteNode::new(node_id);
-							let handshake = remote_node.gen_handshake(self.node_id, RemoteSession::default());
-
-							/* let session = return_remote.session_mut()?;
-							 */
-							outgoing.push(handshake.package(self.net_id, net_id));
+						NodePacket::WantPing(requesting_node_id, requesting_net_id) => {
+							let remote_node = self.peers.entry(requesting_node_id).or_insert(RemoteNode::new(requesting_node_id));
+							// Connect to requestied node
+							self.action(NodeAction::Connect(requesting_node_id, requesting_net_id));
+							let packet_action = NodeAction::Packet(requesting_node_id, NodePacket::AcceptWantPing(return_node_id))
+								.gen_condition(NodeActionCondition::Timeout(self.ticks + 300));
+							self.action(packet_action);
 						},
 						NodePacket::RouteRequest(target_coord, max_distance, requester_coord, requester_node_id) => {
 							// outgoing.push(value)

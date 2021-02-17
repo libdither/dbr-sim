@@ -18,7 +18,7 @@ type PingID = u64;
 const MAX_PENDING_PINGS: usize = 25;
 
 /// Packets that are sent between nodes in this protocol.
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum NodePacket {
 	/// Sent to other Nodes. Expects PingResponse returned
 	Ping(PingID), // Random number uniquely identifying this ping request
@@ -27,8 +27,12 @@ pub enum NodePacket {
 
 	/// Request to a peer for them to request their peers to ping me
 	RequestPings(usize), // usize: max number of pings
+
 	/// Tell a peer that this node wants a ping (implying a potential direct connection)
-	WantPing(InternetID, NodeID),
+	WantPing(NodeID, InternetID),
+	/// Sent when node accepts a WantPing Request
+	/// NodeID: NodeID of Node who send the request in response to a RequestPings
+	AcceptWantPing(NodeID),
 
 	/// Represents a network traversal packet, It is routed through the network via it's RouteCoord
 	/// Vec<u8>: Represents encrypted data meant for a specific node
