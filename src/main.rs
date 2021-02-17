@@ -38,15 +38,8 @@ fn main() {
 
 	for line_result in stdin.lock().lines() {
 		if let Ok(line) = line_result {
-			// This replaces .find_iter() in regular regex crate
-			let mut input: Vec<&str> = Vec::new();
-			let mut current_pos = 0;
-			loop {
-				let capture = split_regex.captures_from_pos(&line[..], current_pos).map_or(None, |c|c);
-				if let Some(Some(cap)) = capture.map(|c|c.get(0)) { current_pos = cap.end(); input.push(cap.as_str()) } else { break }
-			}
-			// This is what is should be
-			//let input = split_regex.find_iter(string).map(|x| x.as_str()).collect::<Vec<&str>>();
+			// Look for 
+			let input: Vec<&str> = split_regex.find_iter(&line[..]).flatten().map(|m|m.as_str()).collect();
 			
 			if let Err(err) = parse_command(&mut internet, &input) {
 				println!("Error: {:?}", err);
