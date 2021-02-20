@@ -1,5 +1,3 @@
-//use std::convert::TryInto;
-
 use crate::internet::{InternetID, InternetPacket};
 
 use ta::{indicators::SimpleMovingAverage, Next};
@@ -25,6 +23,11 @@ pub enum NodePacket {
 	/// PingResponse packet, time between Ping and PingResponse is measured
 	PingResponse(PingID), // Acknowledge Ping(u64), sends back originally sent number
 
+	/// Request Direct Connection
+	DirectRequest,
+	/// Direct Connection Response
+	DirectResponse,
+
 	/// Request to a peer for them to request their peers to ping me
 	RequestPings(usize), // usize: max number of pings
 
@@ -48,7 +51,9 @@ pub enum NodePacket {
 	/// RouteCoord: Accepting node's coordinates
 	/// NodeID: Accepting node's public key (signed and encrypted with requesting node's public key)
 	RouteAccept(RouteCoord, NodeID),
-
+}
+impl NodePacket {
+	pub fn encrypt(self, session_id: SessionID) -> NodeEncryption { NodeEncryption::Session { session_id, packet: self } }
 }
 
 #[derive(Error, Debug)]
@@ -99,6 +104,12 @@ impl DirectSession {
 	}
 	pub fn distance(&self) -> RouteScalar {
 		self.average_dist
+	}
+	pub fn is_viable(&self) -> Option<bool> {
+		if self.ping_queue.len() >= 5 {
+			// TODO: Take into account variability
+			Some(true)
+		} else { None }
 	}
 }
 /// Represents session that is routed through alternate nodes
@@ -180,14 +191,14 @@ impl RemoteNode {
 		NodeEncryption::Handshake { recipient: self.node_id, session_id, signer: my_node_id }
 	}
 	/// Acknowledge a NodeEncryption::Handshake and generate a NodeEncryption::Acknowledge to send back
-	pub fn gen_acknowledgement(&mut self, recipient: NodeID, session_id: SessionID, signer: NodeID) -> NodeEncryption {
+	pub fn gen_acknowledgement(&mut self, recipient: NodeID, session_id: SessionID) -> NodeEncryption {
 		self.session = Some(RemoteSession::from_id(session_id));
 		NodeEncryption::Acknowledge { session_id, acknowledger: recipient }
 	}
 	/// Receive Acknowledgement of previously sent handshake and enable RemoteSession
 	pub fn validate_handshake(&mut self, session_id: SessionID, acknowledger: NodeID) -> Result<(), RemoteNodeError> {
 		let session = self.session()?;
-		if session.session_id == session_id {
+		if session.session_id == session_id && self.node_id == acknowledger {
 			self.handshake_pending = false;
 			Ok(())
 		} else {
@@ -216,7 +227,7 @@ pub enum NodeEncryption {
 	/// Handshake is sent from node wanting to establish secure tunnel to another node
 	Handshake { recipient: NodeID, session_id: SessionID, signer: NodeID },
 	/// When the other node receives the Handshake, they will send back an Acknowledge
-	/// When the original party receives the Acknowledge, that tunnel may not be used 
+	/// When the original party receives the Acknowledge, that tunnel may now be used 
 	Acknowledge { session_id: SessionID, acknowledger: NodeID },
 	Session { session_id: SessionID, packet: NodePacket },
 }
