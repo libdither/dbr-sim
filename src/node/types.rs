@@ -213,10 +213,10 @@ impl RemoteNode {
 				Ok(session.encrypt(packet).package(my_net_id, direct_session.net_id))
 			},
 			// TODO: Implement Routed sessions
-			SessionType::Routed(routed_session) => {
+			/* SessionType::Routed(routed_session) => {
 				// Wrap routed session
 				Err( RemoteNodeError::NoDirectSessionError )
-			},
+			}, */
 			_ => Err( RemoteNodeError::NoDirectSessionError ),
 		}
 	}

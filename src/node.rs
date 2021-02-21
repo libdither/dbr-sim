@@ -2,6 +2,8 @@
 
 const MAX_REQUEST_PINGS: usize = 10;
 const MAX_DIRECT_NODES: usize = 10;
+// Amount of time to wait to connect to a peer who wants to ping
+const WANT_PING_TIMEOUT: usize = 300;
 
 use std::collections::HashMap;
 
@@ -224,14 +226,15 @@ impl Node {
 				let session_id = session.session_id;
 				let direct_session = session.direct_mut()?;
 				let remote_net_id = direct_session.net_id;
-				for i in 0..num_pings {
+				for _ in 0..num_pings {
 					let ping_packet = direct_session.gen_ping(self_ticks).encrypt(session_id);
 					let packet = ping_packet.package(self_net_id, remote_net_id);
 					outgoing.push(packet);
 				}
 			},
-			NodeAction::Route(remote_node_id, remote_route_coord ) => {},
-			NodeAction::Condition(condition, action) => {
+			NodeAction::Route(_remote_node_id, _remote_route_coord ) => {},
+			// Embedded action is run in main loop
+			NodeAction::Condition(condition, _) => {
 				return Ok(condition.test(self)?.is_some());
 			}
 			// _ => { log::error!("Invalid NodeAction / NodeActionCondition pair"); },
@@ -304,16 +307,16 @@ impl Node {
 						},
 						// Initiate Direct Handshakes with people who want pings
 						NodePacket::WantPing(requesting_node_id, requesting_net_id) => {
-							let remote_node = self.remotes.entry(requesting_node_id).or_insert(RemoteNode::new(requesting_node_id));
-							// Connect to requestied node
+							// Connect to requested node
 							self.action(NodeAction::Connect(requesting_node_id, requesting_net_id));
+							// 
 							let packet_action = NodeAction::Packet(requesting_node_id, NodePacket::AcceptWantPing(return_node_id))
-								.gen_condition(NodeActionCondition::Timeout(self.ticks + 300));
+								.gen_condition(NodeActionCondition::Timeout(self.ticks + WANT_PING_TIMEOUT));
 							self.action(packet_action);
 						},
-						NodePacket::RouteRequest(target_coord, max_distance, requester_coord, requester_node_id) => {
+						/*NodePacket::RouteRequest(target_coord, max_distance, requester_coord, requester_node_id) => {
 							// outgoing.push(value)
-						},
+						},*/
 						_ => { },
 					}
 				}
