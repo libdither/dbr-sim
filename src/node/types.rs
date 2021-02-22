@@ -1,10 +1,9 @@
 use crate::internet::{InternetID, InternetPacket};
 
-use std::cmp::Reverse;
+pub use crate::node::session::{RemoteSession, SessionError};
+use crate::node::session::{PingID};
 
-use ta::{indicators::SimpleMovingAverage, Next};
 use thiserror::Error;
-use priority_queue::PriorityQueue;
 
 /// Hash uniquely identifying a node (represents the Multihash of the node's Public Key)
 pub type NodeID = u32;
@@ -13,10 +12,6 @@ pub type SessionID = u32;
 /// Coordinate that represents a position of a node relative to other nodes in 2D space.
 pub type RouteScalar = u64;
 pub type RouteCoord = (RouteScalar, RouteScalar);
-/// Number that uniquely identifies a ping request so that multiple Pings may be sent at the same time
-type PingID = u64;
-
-const MAX_PENDING_PINGS: usize = 25;
 
 /// Packets that are sent between nodes in this protocol.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -58,123 +53,20 @@ pub enum NodePacket {
 impl NodePacket {
 	pub fn encrypt(self, session_id: SessionID) -> NodeEncryption { NodeEncryption::Session { session_id, packet: self } }
 }
-
-#[derive(Error, Debug)]
-pub enum SessionError {
-    #[error("There is no previous ping sent out with ID: {ping_id:?} or ping was forgotten")]
-	UnknownPingID { ping_id: PingID },
-}
-
-/// Represents session that is routed directly (through the internet)
-#[derive(Derivative)]
-#[derivative(Debug)]
-pub struct DirectSession {
-	pub net_id: InternetID, // Internet Address
-	#[derivative(Debug="ignore")]
-	ping_queue: PriorityQueue<PingID, Reverse<usize>>, // Tuple represents (ID of ping, priority by reversed time sent) 
-	dist_avg: RouteScalar,
-	dist_dev: RouteScalar,
-	#[derivative(Debug="ignore")]
-	ping_avg: SimpleMovingAverage, // Moving average of ping times
-	#[derivative(Debug="ignore")]
-	ping_dev: ta::indicators::StandardDeviation,
-}
-impl DirectSession {
-	fn new(net_id: InternetID) -> Self {
-		Self {
-			net_id,
-			ping_queue: PriorityQueue::with_capacity(MAX_PENDING_PINGS),
-			dist_avg: 0,
-			dist_dev: 0,
-			ping_avg: SimpleMovingAverage::new(10).unwrap(),
-			ping_dev: ta::indicators::StandardDeviation::new(10).unwrap(),
-		}
-	}
-	// Generate Ping Packet
-	pub fn gen_ping(&mut self, gen_time: usize) -> NodePacket {
-		let ping_id: PingID = rand::random();
-		self.ping_queue.push(ping_id, Reverse(gen_time));
-		// There shouldn't be more than 25 pings pending
-		if self.ping_queue.len() >= MAX_PENDING_PINGS {
-			self.ping_queue.pop();
-		}
-		NodePacket::Ping(ping_id)
-	}
-	// Acknowledge Ping Response packet
-	pub fn acknowledge_ping(&mut self, ping_id: PingID, current_time: usize) -> Result<RouteScalar, SessionError> {
-		if let Some(( _, Reverse(time_sent) )) = self.ping_queue.remove(&ping_id) {
-			let round_trip_time = current_time - time_sent;
-			let distance = round_trip_time as f64 / 2.0;
-			self.dist_avg = self.ping_avg.next(distance) as RouteScalar;
-			self.dist_dev = self.ping_dev.next(distance) as RouteScalar;
-			Ok(self.dist_avg)
-		} else { Err(SessionError::UnknownPingID { ping_id }) }
-	}
-	pub fn distance(&self) -> RouteScalar {
-		self.dist_avg
-	}
-	pub fn is_viable(&self) -> Option<bool> {
-		if self.ping_queue.len() >= 5 {
-			Some(self.dist_dev < 1)
-		} else { None }
-	}
-	pub fn pending_pings(&self) -> usize { self.ping_queue.len() }
-}
-/// Represents session that is routed through alternate nodes
-#[derive(Debug)]
-pub struct RoutedSession {
-	remote_route: RouteCoord,
-	intermediate_nodes: Vec<(NodeID, RouteCoord)>,
-}
-
-#[derive(Debug)]
-pub enum SessionType {
-	// Directly connected
-	Direct(DirectSession),
-	// Routed session
-	Routed(RoutedSession),
-	// Return to sender connection
-	Return,
-}
-
-#[derive(Debug)]
-pub struct RemoteSession {
-	pub session_id: SessionID, // All connections must have a SessionID for encryption
-	pub session_type: SessionType, //  Sessions can either be Routed through other nodes or Directly Connected
-}
-impl RemoteSession {
-	pub fn default() -> Self { Self {session_id: rand::random(), session_type: SessionType::Return } }
-	pub fn with_direct(net_id: InternetID) -> Self { Self { session_id: rand::random(), session_type: SessionType::Direct(DirectSession::new(net_id))} }
-	pub fn from_session(session_id: SessionID) -> Self { Self { session_id, session_type: SessionType::Return } }
-
-	pub fn encrypt(&self, packet: NodePacket) -> NodeEncryption {
-		NodeEncryption::Session { session_id: self.session_id, packet }
-	}
-	pub fn upgrade_direct(&mut self, net_id: InternetID) {
-		if let SessionType::Return = self.session_type {
-			self.session_type = SessionType::Direct(DirectSession::new(net_id));
-		}
-	}
-	pub fn is_direct(&self) -> bool { match self.session_type { SessionType::Direct(_) => true, _ => false} }
-	pub fn direct(&self) -> Result<&DirectSession, RemoteNodeError> { match &self.session_type { SessionType::Direct(direct) => Ok(direct), _ => Err(RemoteNodeError::NoDirectSessionError) } }
-	pub fn direct_mut(&mut self) -> Result<&mut DirectSession, RemoteNodeError> { match &mut self.session_type { SessionType::Direct(direct) => Ok(direct), _ => Err(RemoteNodeError::NoDirectSessionError), } }
-}
-
-#[derive(Debug)]
-pub struct RemoteNode {
-	pub node_id: NodeID, // The ID of the remote node
-	handshake_pending: bool,
-	session: Option<RemoteSession>, // Session object, is None if no connection is active
-}
-
 #[derive(Error, Debug)]
 pub enum RemoteNodeError {
     #[error("There is no active session with the node: {node_id:?}")]
 	NoSessionError { node_id: NodeID },
 	#[error("Session ID passed: {passed:?} does not match existing session ID")]
-    InvalidSessionError { passed: SessionID },
-    #[error("Cannot package packet because RemoteSession type is not DirectSession")]
-	NoDirectSessionError,
+    UnknownAcknowledgement { passed: SessionID },
+	#[error("Session Error")]
+	SessionError(#[from] SessionError),
+}
+#[derive(Debug)]
+pub struct RemoteNode {
+	pub node_id: NodeID, // The ID of the remote node
+	handshake_pending: bool,
+	session: Option<RemoteSession>, // Session object, is None if no connection is active
 }
 impl RemoteNode {
 	pub fn new(node_id: NodeID) -> Self {
@@ -211,24 +103,10 @@ impl RemoteNode {
 		if session.session_id == session_id && self.node_id == acknowledger {
 			self.handshake_pending = false;
 			Ok(())
-		} else {
-			Err( RemoteNodeError::InvalidSessionError { passed: session_id } )
-		}
+		} else { Err( RemoteNodeError::UnknownAcknowledgement { passed: session_id } ) }
 	}
-	/// Encrypt and generate packet if SessionType is Direct
-	pub fn gen_packet(&self, my_net_id: InternetID, packet: NodePacket) -> Result<InternetPacket, RemoteNodeError> {
-		let session = self.session()?;
-		match &session.session_type {
-			SessionType::Direct(direct_session) => {
-				Ok(session.encrypt(packet).package(my_net_id, direct_session.net_id))
-			},
-			// TODO: Implement Routed sessions
-			/* SessionType::Routed(routed_session) => {
-				// Wrap routed session
-				Err( RemoteNodeError::NoDirectSessionError )
-			}, */
-			_ => Err( RemoteNodeError::NoDirectSessionError ),
-		}
+	pub fn add_packet(&self, packet: NodePacket, outgoing: &mut Vec<InternetPacket>) -> Result<(), RemoteNodeError> {
+		Ok(outgoing.push(self.session()?.gen_packet(packet)?))
 	}
 }
 

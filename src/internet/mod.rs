@@ -61,7 +61,9 @@ impl<CN: CustomNode> InternetSim<CN> {
 				// Get Packets going to node
 				let incoming_packets = self.router.tick_node(node.net_id());
 				// Get packets coming from node
-				let outgoing_packets = node.tick(incoming_packets);
+				let mut outgoing_packets = node.tick(incoming_packets);
+				// Make outgoing packets have the correct return address
+				for packet in &mut outgoing_packets { packet.src_addr = node.net_id(); }
 				// Send packets through the router
 				self.router.add_packets(outgoing_packets);
 			}
