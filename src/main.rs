@@ -22,15 +22,19 @@ fn main() {
 	let mut internet = InternetSim::new();
 	let node = Node::new(0, internet.lease());
 	internet.add_node(node);
-	let mut node1 = Node::new(1, internet.lease());
-	node1.action(NodeAction::Connect(0, 0));
-	node1.action( NodeAction::Ping(0, 3).gen_condition(NodeActionCondition::DirectSession(0) ));
+	let node1 = Node::new(1, internet.lease())
+		.with_action(NodeAction::ConnectDirect(0, 0))
+		.with_action(NodeAction::TestDirect(0).gen_condition(NodeActionCondition::DirectSession(0)))
+		.with_action(NodeAction::RequestPeers(0, 10).gen_condition(NodeActionCondition::PeerTested(0)) );
 	internet.add_node(node1);
 
 	let node2 = Node::new(2, internet.lease())
-		.with_action(NodeAction::Connect(0, 0))
-		.with_action(NodeAction::Ping(0, 3).gen_condition(NodeActionCondition::DirectSession(0)) );
+		.with_action(NodeAction::ConnectDirect(0, 0))
+		.with_action(NodeAction::TestDirect(0).gen_condition(NodeActionCondition::DirectSession(0)) )
+		.with_action(NodeAction::RequestPeers(0, 10).gen_condition(NodeActionCondition::PeerTested(0)) );
 	internet.add_node(node2);
+
+	internet.run(300);
 
 
 	let stdin = io::stdin();
@@ -81,6 +85,12 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 		Some(&"list") => {
 			internet.list_nodes();
 		},
+		Some(&"print") => {
+			if let Some(Ok(net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
+				if let Some(node) = internet.node(net_id) { println!("{:#?}", node) }
+				else { Err("print: No node currently leases this InternetID")? };
+			} else { Err("print: invalid InternetID format")? };
+		},
 		// Node subcommand
 		Some(&"node") => {
 			let net_id = if let Some(Ok(net_id)) = command.next().map(|s|s.parse::<InternetID>()) { net_id } else { return Err("node: must pass valid InternetID as second argument to identify specific node")? };
@@ -91,7 +101,7 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
 						if let Some(Ok(remote_net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
 							println!("Connecting {:?} to Node(NodeID({:?}), InternetID({:?}))", node.node_id, remote_node_id, remote_net_id);
-							let action = NodeAction::Connect(remote_node_id, remote_net_id);
+							let action = NodeAction::ConnectDirect(remote_node_id, remote_net_id);
 							node.action(action);
 						} else { Err("node: bootstrap: requires InternetID to bootstrap off of")? }
 					} else { Err("node: bootstrap: requires a NodeID to establish secure connection")? }
