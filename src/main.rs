@@ -101,16 +101,16 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
 						if let Some(Ok(remote_net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
 							println!("Connecting {:?} to Node(NodeID({:?}), InternetID({:?}))", node.node_id, remote_node_id, remote_net_id);
-							let action = NodeAction::ConnectDirect(remote_node_id, remote_net_id);
-							node.action(action);
-						} else { Err("node: bootstrap: requires InternetID to bootstrap off of")? }
-					} else { Err("node: bootstrap: requires a NodeID to establish secure connection")? }
+							node.action(NodeAction::ConnectDirect(remote_node_id, remote_net_id));
+						} else { Err("node: connect: requires InternetID to bootstrap off of")? }
+					} else { Err("node: connect: requires a NodeID to establish secure connection")? }
 				},
 				Some(&"bootstrap") | Some(&"boot") => {
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
-						println!("Bootstrapping node NodeID({:?}) to NodeID({:?})", node.node_id, remote_node_id);
-						let action = NodeAction::Bootstrap(remote_node_id).gen_condition(NodeActionCondition::Session(remote_node_id));
-						node.action(action);
+						if let Some(Ok(remote_net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
+							println!("Bootstrapping {:?} to Node(NodeID({:?}), InternetID({:?}))", node.node_id, remote_node_id, remote_net_id);
+							node.action(NodeAction::Bootstrap(remote_node_id, remote_net_id));
+						} else { Err("node: bootstrap: requires InternetID to bootstrap off of")? }
 					} else { Err("node: bootstrap: requires a NodeID to establish secure connection")? }
 				}
 				// Initiate a connection and send some message
