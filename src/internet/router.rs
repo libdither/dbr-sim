@@ -37,7 +37,7 @@ pub struct InternetRouter<LC: LatencyCalculator> {
 	/// Map linking Node pairs to speed between them (supports differing 2-way speeds)
 	speed_map: HashMap<InternetID, LC>,
 	/// Map linking destination `Node`s to inbound packets
-	packet_map: HashMap<InternetID, Vec<(InternetPacket, usize)>>,
+	packet_map: HashMap<InternetID, Vec<(InternetPacket, isize)>>,
 }
 impl<LC: LatencyCalculator> InternetRouter<LC> {
 	pub fn add_packets(&mut self, packets: Vec<InternetPacket>) {
@@ -49,7 +49,7 @@ impl<LC: LatencyCalculator> InternetRouter<LC> {
 			self.speed_map.entry(packet.dest_addr).or_insert_with(||LC::new(&mut rng));
 			//use std::ops::Index;
 			// This shouldn't panic since I set it right there ^^^
-			let latency = self.speed_map[&packet.src_addr].generate(&self.speed_map[&packet.dest_addr], &mut rng);
+			let latency = self.speed_map[&packet.src_addr].generate(&self.speed_map[&packet.dest_addr], &mut rng) as isize;
 			//let latency = src_calc.calculate(dest_calc, &mut rng);
 
 			// Add packet to packet stream

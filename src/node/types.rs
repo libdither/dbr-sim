@@ -94,7 +94,7 @@ impl RemoteNode {
 	}
 	/// Acknowledge a NodeEncryption::Handshake and generate a NodeEncryption::Acknowledge to send back
 	pub fn gen_acknowledgement(&mut self, recipient: NodeID, session_id: SessionID, return_net_id: InternetID) -> NodeEncryption {
-		self.session = Some(RemoteSession::new(session_id, SessionType::Return(return_net_id)));
+		self.session = Some(RemoteSession::new(session_id, SessionType::Return, return_net_id));
 		NodeEncryption::Acknowledge { session_id, acknowledger: recipient }
 	}
 	/// Receive Acknowledgement of previously sent handshake and enable RemoteSession

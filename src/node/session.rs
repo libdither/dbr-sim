@@ -17,13 +17,14 @@ const MAX_PENDING_PINGS: usize = 25;
 pub struct SessionTracker {
 	#[derivative(Debug="ignore")]
 	ping_queue: PriorityQueue<PingID, Reverse<usize>>, // Tuple represents (ID of ping, priority by reversed time sent) 
-	dist_avg: RouteScalar,
+	pub dist_avg: RouteScalar,
 	#[derivative(Debug="ignore")]
 	dist_dev: RouteScalar,
 	#[derivative(Debug="ignore")]
 	ping_avg: SimpleMovingAverage, // Moving average of ping times
 	#[derivative(Debug="ignore")]
 	ping_dev: StandardDeviation,
+	pub ping_count: usize,
 }
 impl SessionTracker {
 	fn new() -> Self {
@@ -33,6 +34,7 @@ impl SessionTracker {
 			dist_dev: 0,
 			ping_avg: SimpleMovingAverage::new(10).unwrap(),
 			ping_dev: ta::indicators::StandardDeviation::new(10).unwrap(),
+			ping_count: 0,
 		}
 	}
 	// Generate Ping Packet
@@ -52,6 +54,7 @@ impl SessionTracker {
 			let distance = round_trip_time as f64 / 2.0;
 			self.dist_avg = self.ping_avg.next(distance) as RouteScalar;
 			self.dist_dev = self.ping_dev.next(distance) as RouteScalar;
+			self.ping_count += 1;
 			Ok(self.dist_avg)
 		} else { Err(SessionError::UnknownPingID { ping_id }) }
 	}
@@ -61,7 +64,7 @@ impl SessionTracker {
 	/// Returns Some if the connection has been tested enough
 	/// Returns Some(true) if it is a viable connection
 	pub fn is_viable(&self) -> Option<bool> {
-		if self.ping_queue.len() >= 5 {
+		if self.ping_count >= 2 {
 			Some(self.dist_dev < 1)
 		} else { None }
 	}
@@ -70,12 +73,15 @@ impl SessionTracker {
 /// Represents session that is routed directly (through the internet)
 #[derive(Default, Debug)]
 pub struct DirectSession {
-	pub net_id: InternetID, // Internet Address
 	pub was_requested: bool,
 }
 impl DirectSession {
-	fn new(net_id: InternetID) -> Self { Self { net_id, was_requested: false } }
-	fn with_request(mut self) -> Self { self.was_requested = true; self }
+	fn new(was_requested: bool) -> Self { Self { was_requested } }
+	/// Check if allowed to send a DirectRequest
+	pub fn gen_direct_request(&mut self) -> Option<NodePacket> {
+		if !self.was_requested { self.was_requested = true; Some(NodePacket::DirectRequest) }
+		else { None }
+	}
 }
 /// Represents session that is routed through alternate nodes
 #[derive(Debug)]
@@ -84,18 +90,19 @@ pub struct RoutedSession {
 	intermediate_nodes: Vec<(NodeID, RouteCoord)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Derivative)]
+#[derivative(Default(bound=""))]
 pub enum SessionType {
 	// Directly connected
 	Direct(DirectSession),
 	// Routed session
 	Routed(RoutedSession),
 	// Return to sender connection
-	Return(InternetID),
+	#[derivative(Default)]
+	Return,
 }
 impl SessionType {
-	pub fn default(net_id: InternetID) -> Self { Self::Return(net_id) } 
-	pub fn direct(net_id: InternetID) -> Self { Self::Direct(DirectSession::new(net_id)) }
+	pub fn direct(was_requested: bool) -> Self { Self::Direct(DirectSession::new(was_requested)) }
 }
 
 #[derive(Error, Debug)]
@@ -111,16 +118,17 @@ pub struct RemoteSession {
 	pub session_id: SessionID, // All connections must have a SessionID for encryption
 	pub session_type: SessionType, //  Sessions can either be Routed through other nodes or Directly Connected
 	pub tracker: SessionTracker,
+	pub return_net_id: InternetID,
 }
 impl RemoteSession {
-	pub fn new(session_id: SessionID, session_type: SessionType) -> Self {
-		Self { session_id, session_type, tracker: SessionTracker::new() }
+	pub fn new(session_id: SessionID, session_type: SessionType, return_net_id: InternetID) -> Self {
+		Self { session_id, session_type, tracker: SessionTracker::new(), return_net_id }
 	}
-	pub fn new_return(net_id: InternetID) -> Self { Self::new(rand::random(), SessionType::default(net_id)) }
-	pub fn new_direct(net_id: InternetID) -> Self { Self::new(rand::random(), SessionType::direct(net_id)) }
-	pub fn request_direct(&mut self) {
-		if let SessionType::Return(net_id) = self.session_type {
-			self.session_type = SessionType::Direct(DirectSession::new(net_id).with_request());
+	pub fn random(return_net_id: InternetID) -> Self { Self::new(rand::random(), SessionType::Return, return_net_id) }
+	pub fn with_direct(mut self) -> Self { self.session_type = SessionType::direct(false); self }
+	pub fn request_direct(&mut self, was_requested: bool) {
+		if let SessionType::Return = self.session_type {
+			self.session_type = SessionType::direct(was_requested);
 		}
 	}
 	pub fn is_direct(&self) -> bool { match self.session_type { SessionType::Direct(_) => true, _ => false} }
@@ -129,11 +137,11 @@ impl RemoteSession {
 	/// Generate InternetPacket from NodePacket doing whatever needs to be done to route it through the network securely
 	pub fn gen_packet(&self, packet: NodePacket) -> Result<InternetPacket, SessionError> {
 		match &self.session_type {
-			SessionType::Direct(direct_session) => {
-				Ok(packet.encrypt(self.session_id).package(0, direct_session.net_id))
+			SessionType::Direct(_) => {
+				Ok(packet.encrypt(self.session_id).package(0, self.return_net_id))
 			},
-			SessionType::Return(net_id) => {
-				Ok(packet.encrypt(self.session_id).package(0, *net_id))
+			SessionType::Return => {
+				Ok(packet.encrypt(self.session_id).package(0, self.return_net_id))
 			}
 			_ => todo!(),
 		}
