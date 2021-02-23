@@ -1,6 +1,6 @@
 use crate::internet::{InternetID, InternetPacket};
 
-pub use crate::node::session::{RemoteSession, SessionError};
+pub use crate::node::session::{RemoteSession, SessionError, SessionType};
 use crate::node::session::{PingID};
 
 use thiserror::Error;
@@ -93,8 +93,8 @@ impl RemoteNode {
 		NodeEncryption::Handshake { recipient: self.node_id, session_id, signer: my_node_id }
 	}
 	/// Acknowledge a NodeEncryption::Handshake and generate a NodeEncryption::Acknowledge to send back
-	pub fn gen_acknowledgement(&mut self, recipient: NodeID, session_id: SessionID) -> NodeEncryption {
-		self.session = Some(RemoteSession::from_session(session_id));
+	pub fn gen_acknowledgement(&mut self, recipient: NodeID, session_id: SessionID, return_net_id: InternetID) -> NodeEncryption {
+		self.session = Some(RemoteSession::new(session_id, SessionType::Return(return_net_id)));
 		NodeEncryption::Acknowledge { session_id, acknowledger: recipient }
 	}
 	/// Receive Acknowledgement of previously sent handshake and enable RemoteSession

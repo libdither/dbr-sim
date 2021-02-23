@@ -15,10 +15,14 @@ const MAX_PENDING_PINGS: usize = 25;
 #[derive(Derivative)]
 #[derivative(Debug)]
 pub struct SessionTracker {
+	#[derivative(Debug="ignore")]
 	ping_queue: PriorityQueue<PingID, Reverse<usize>>, // Tuple represents (ID of ping, priority by reversed time sent) 
 	dist_avg: RouteScalar,
+	#[derivative(Debug="ignore")]
 	dist_dev: RouteScalar,
+	#[derivative(Debug="ignore")]
 	ping_avg: SimpleMovingAverage, // Moving average of ping times
+	#[derivative(Debug="ignore")]
 	ping_dev: StandardDeviation,
 }
 impl SessionTracker {
@@ -87,7 +91,11 @@ pub enum SessionType {
 	// Routed session
 	Routed(RoutedSession),
 	// Return to sender connection
-	Return,
+	Return(InternetID),
+}
+impl SessionType {
+	pub fn default(net_id: InternetID) -> Self { Self::Return(net_id) } 
+	pub fn direct(net_id: InternetID) -> Self { Self::Direct(DirectSession::new(net_id)) }
 }
 
 #[derive(Error, Debug)]
@@ -105,11 +113,13 @@ pub struct RemoteSession {
 	pub tracker: SessionTracker,
 }
 impl RemoteSession {
-	pub fn default() -> Self{Self{ session_id: rand::random(), session_type: SessionType::Return, tracker: SessionTracker::new() }}
-	pub fn with_direct(net_id: InternetID) -> Self{Self{ session_id: rand::random(), session_type: SessionType::Direct(DirectSession::new(net_id)), tracker: SessionTracker::new() }}
-	pub fn from_session(session_id: SessionID) -> Self{Self{ session_id, session_type: SessionType::Return, tracker: SessionTracker::new() }}
-	pub fn request_direct(&mut self, net_id: InternetID) {
-		if let SessionType::Return = self.session_type {
+	pub fn new(session_id: SessionID, session_type: SessionType) -> Self {
+		Self { session_id, session_type, tracker: SessionTracker::new() }
+	}
+	pub fn new_return(net_id: InternetID) -> Self { Self::new(rand::random(), SessionType::default(net_id)) }
+	pub fn new_direct(net_id: InternetID) -> Self { Self::new(rand::random(), SessionType::direct(net_id)) }
+	pub fn request_direct(&mut self) {
+		if let SessionType::Return(net_id) = self.session_type {
 			self.session_type = SessionType::Direct(DirectSession::new(net_id).with_request());
 		}
 	}
@@ -122,12 +132,10 @@ impl RemoteSession {
 			SessionType::Direct(direct_session) => {
 				Ok(packet.encrypt(self.session_id).package(0, direct_session.net_id))
 			},
-			// TODO: Implement Routed sessions
-			/* SessionType::Routed(routed_session) => {
-				// Wrap routed session
-				Err( RemoteNodeError::NoDirectSessionError )
-			}, */
-			_ => Err( SessionError::NoDirectSessionError ),
+			SessionType::Return(net_id) => {
+				Ok(packet.encrypt(self.session_id).package(0, *net_id))
+			}
+			_ => todo!(),
 		}
 	}
 }

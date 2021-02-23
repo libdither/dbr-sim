@@ -60,7 +60,7 @@ pub enum NodeAction {
 	/// Ping a node
 	Ping(NodeID, usize), // Ping node X number of times
 	/// Continually Ping remote until connection is deamed viable or unviable
-	TestDirect(NodeID),
+	TestDirect(NodeID, usize),
 	/// Send specific packet to node
 	Packet(NodeID, NodePacket),
 	/// Request Peers of another node to ping me
@@ -205,7 +205,7 @@ impl Node {
 				let remote = self.remotes.entry(remote_node_id).or_insert(RemoteNode::new(remote_node_id));
 				// Run Handshake if no active session
 				if !remote.session_active() {
-					let packet = remote.gen_handshake(self.node_id, RemoteSession::with_direct(remote_net_id));
+					let packet = remote.gen_handshake(self.node_id, RemoteSession::new_direct(remote_net_id));
 					let packet = packet.package(self.net_id, remote_net_id);
 					outgoing.push(packet);
 				}
@@ -219,19 +219,28 @@ impl Node {
 					outgoing.push(packet);
 				}
 			},
-			NodeAction::TestDirect(remote_node_id) => {
+			NodeAction::TestDirect(remote_node_id, timeout) => {
 				let session = self.remote_mut(&remote_node_id)?.session_mut()?;
 				let pending_pings = session.tracker.pending_pings();
 				let is_viable = session.tracker.is_viable();
+
+				let (session_id, rev_distance) = (session.session_id, Reverse(session.tracker.distance()));
 				match is_viable {
 					None => {
 						if pending_pings < 4 {
 							self.action(NodeAction::Ping(remote_node_id, 3).gen_condition(NodeActionCondition::DirectSession(remote_node_id)));
 						}
-						self.action(NodeAction::TestDirect(remote_node_id).gen_condition(NodeActionCondition::RunAfter(30)));
+						if timeout > 0 {
+							self.action(NodeAction::TestDirect(remote_node_id, timeout - 30).gen_condition(NodeActionCondition::RunAfter(30)));
+						}
 					},
 					Some(status) => {
-						if status && !session.direct_mut()?.was_requested { self.action(NodeAction::Packet(remote_node_id, NodePacket::DirectRequest)); }
+						if status {
+							if !session.direct_mut()?.was_requested { 
+								self.action(NodeAction::Packet(remote_node_id, NodePacket::DirectRequest));
+							}
+							self.direct_nodes.push(session_id, rev_distance);
+						}
 					}
 				}
 			},
@@ -246,7 +255,7 @@ impl Node {
 				// Connect directly to node
 				self.action(NodeAction::ConnectDirect(remote_node_id, net_id));
 				// Test Direct connection
-				self.action(NodeAction::TestDirect(remote_node_id).gen_condition(NodeActionCondition::DirectSession(remote_node_id)));
+				self.action(NodeAction::TestDirect(remote_node_id, 1000).gen_condition(NodeActionCondition::DirectSession(remote_node_id)));
 				// Ask for Pings
 				self.action(NodeAction::RequestPeers(remote_node_id, 10).gen_condition(NodeActionCondition::PeerTested(remote_node_id)));
 			},
@@ -269,7 +278,7 @@ impl Node {
 					if recipient == self.node_id {
 						// If receive a Handshake Request, acknowledge it
 						let remote = self.remotes.entry(signer).or_insert(RemoteNode::new(signer));
-						let acknowledge_packet = remote.gen_acknowledgement(recipient, session_id);
+						let acknowledge_packet = remote.gen_acknowledgement(recipient, session_id, received_packet.src_addr);
 						self.sessions.insert(session_id, signer); // Register to SessionID index
 						outgoing.push(acknowledge_packet.package(self.net_id, received_packet.src_addr));
 					} else {
@@ -314,11 +323,11 @@ impl Node {
 						NodePacket::DirectRequest => {
 							// Make sure Session is direct
 							let session = self.remote_mut(&return_node_id)?.session_mut()?;
-							session.request_direct(received_packet.src_addr);
+							session.request_direct();
 							
 							let distance = session.tracker.distance();
 							match session.tracker.is_viable() {
-								None => self.action(NodeAction::TestDirect(return_node_id)),
+								None => self.action(NodeAction::TestDirect(return_node_id, 3000)),
 								Some(true) => { self.direct_nodes.push(session_id, Reverse(distance)); },
 								Some(false) => {},
 							};

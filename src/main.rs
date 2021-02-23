@@ -23,18 +23,14 @@ fn main() {
 	let node = Node::new(0, internet.lease());
 	internet.add_node(node);
 	let node1 = Node::new(1, internet.lease())
-		.with_action(NodeAction::ConnectDirect(0, 0))
-		.with_action(NodeAction::TestDirect(0).gen_condition(NodeActionCondition::DirectSession(0)))
-		.with_action(NodeAction::RequestPeers(0, 10).gen_condition(NodeActionCondition::PeerTested(0)) );
+		.with_action(NodeAction::Bootstrap(0, 0));
 	internet.add_node(node1);
 
 	let node2 = Node::new(2, internet.lease())
-		.with_action(NodeAction::ConnectDirect(0, 0))
-		.with_action(NodeAction::TestDirect(0).gen_condition(NodeActionCondition::DirectSession(0)) )
-		.with_action(NodeAction::RequestPeers(0, 10).gen_condition(NodeActionCondition::PeerTested(0)) );
+		.with_action(NodeAction::Bootstrap(0, 0));
 	internet.add_node(node2);
 
-	internet.run(300);
+	internet.run(3000);
 
 
 	let stdin = io::stdin();
