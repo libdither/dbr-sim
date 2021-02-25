@@ -26,11 +26,14 @@ fn main() {
 		.with_action(NodeAction::Bootstrap(0, 0));
 	internet.add_node(node1);
 
-	let node2 = Node::new(2, internet.lease())
-		.with_action(NodeAction::Bootstrap(0, 0));//.gen_condition(NodeActionCondition::RunAt(3000)));
-	internet.add_node(node2);
+	for i in 2..4 {
+		let node2 = Node::new(i, internet.lease())
+		.with_action(NodeAction::Bootstrap(0, 0)); //.gen_condition(NodeActionCondition::RunAt(3000)));
+		internet.add_node(node2);
+	}
+	
 
-	internet.run(3000);
+	internet.run(30000);
 
 
 	let stdin = io::stdin();
@@ -79,7 +82,14 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 		},
 		// List nodes
 		Some(&"list") => {
-			internet.list_nodes();
+			if let Some(subcommand) = command.next() {
+				match *subcommand {
+					"peered" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.peered_nodes)),
+					_ => { println!("list: unknown subcommand") }
+				}
+			} else {
+				internet.nodes.iter().for_each(|(id,node)|println!("{}:	{:?}", id, node));
+			}
 		},
 		Some(&"print") => {
 			if let Some(Ok(net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
