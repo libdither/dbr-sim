@@ -24,7 +24,7 @@ pub trait CustomNode: std::fmt::Debug {
 
 #[derive(Debug)]
 pub struct InternetSim<CN: CustomNode> {
-	nodes: HashMap<InternetID, CN>,
+	pub nodes: HashMap<InternetID, CN>,
 	router: InternetRouter<EuclidianLatencyCalculator>,
 }
 impl<CN: CustomNode> InternetSim<CN> {
@@ -50,9 +50,7 @@ impl<CN: CustomNode> InternetSim<CN> {
 		self.nodes.get(&node_id)
 	}
 	pub fn list_nodes(&mut self) {
-		for (key, item) in &self.nodes {
-			println!("	{:?}", item);
-		}
+		
 	}
 	pub fn run(&mut self, ticks: usize) {
 		//let packets_tmp = Vec::new();

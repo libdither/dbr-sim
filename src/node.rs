@@ -97,7 +97,7 @@ pub struct Node {
 
 	pub remotes: HashMap<NodeID, RemoteNode>,
 	pub sessions: HashMap<SessionID, NodeID>,
-	pub direct_nodes: PriorityQueue<SessionID, Reverse<RouteScalar>>, // Sort Queue SessionID by distance (use Reverse to access shortest index)
+	pub peered_nodes: PriorityQueue<SessionID, Reverse<RouteScalar>>, // Sort Queue SessionID by distance (use Reverse to access shortest index)
 	pub actions_queue: Vec<NodeAction>, // Actions will wait here until NodeID session is established
 }
 impl CustomNode for Node {
@@ -111,8 +111,9 @@ impl CustomNode for Node {
 		// Parse Incoming Packets
 		for packet in incoming {
 			//let mut noise = builder.local_private_key(self.keypair.)
+			let (src_addr, dest_addr) = (packet.src_addr, packet.dest_addr);
 			if let Err(err) = self.parse_packet(packet, &mut outgoing) {
-				println!("Failed to parse packet: {:?}", err);
+				log::error!("Error in parsing packet from InternetID({}) to InternetID({}): {:?}", src_addr, dest_addr, err);
 			}
 		}
 		
@@ -131,7 +132,7 @@ impl CustomNode for Node {
 		for action in generated_actions.into_iter() {
 			match action {
 				NodeAction::Condition(_, action) => self.actions_queue.push(*action),
-				_ => { log::debug!("[{: >4}] Node {} Done Action: {:?}", self.ticks, self.node_id, action); },
+				_ => { log::trace!("[{: >4}] Node {} Done Action: {:?}", self.ticks, self.node_id, action); },
 			}
 		}
 
@@ -195,7 +196,7 @@ impl Node {
 
 			remotes: Default::default(),
 			sessions: Default::default(),
-			direct_nodes: Default::default(),
+			peered_nodes: Default::default(),
 			actions_queue: Default::default(),
 		}
 	}
@@ -253,7 +254,7 @@ impl Node {
 						if status {
 							// Send reciptical PeerTest request
 							self.action(NodeAction::Packet(remote_node_id, NodePacket::PeerRequest));
-							self.direct_nodes.push(session_id, rev_distance);
+							self.peered_nodes.push(session_id, rev_distance);
 							self.action(NodeAction::NotifyNewNode(remote_node_id));
 						}
 						return Ok(true);
@@ -276,7 +277,7 @@ impl Node {
 				self.action(NodeAction::RequestPeers(remote_node_id, TARGET_DIRECT_NODES/2).gen_condition(NodeActionCondition::PeerTested(remote_node_id)));
 			},
 			NodeAction::NotifyNewNode(new_node_id) => {
-				for (session, _) in &self.direct_nodes {
+				for (session, _) in &self.peered_nodes {
 					let direct_node_id = &self.sessions[session];
 					if *direct_node_id != new_node_id { // Don't notify the node that the notification is about
 						self.remote(&new_node_id)?.add_packet(NodePacket::NewPeersHint(new_node_id), outgoing)?;
@@ -318,7 +319,10 @@ impl Node {
 				},
 				Session { session_id, packet: node_packet } => {
 					let return_node_id = *self.sessions.get(&session_id).ok_or(PacketParseError::UnknownSession { session_id })?;
-					log::debug!("[{: >4}] Node({}) received NodePacket::{:?} from NodeID({}), InternetID({})", self.ticks, self.node_id, node_packet, return_node_id, received_packet.src_addr);
+					let current_time = self.ticks;
+					let packet_last_received  = self.remote_mut(&return_node_id)?.session_mut()?.check_packet_time(&node_packet, current_time);
+					
+					log::debug!("[{: >4}] Node({}) received NodePacket::{:?} from NodeID({}), InternetID({})", current_time, self.node_id, node_packet, return_node_id, received_packet.src_addr);
 					//let return_remote = self.remote_mut(&return_node_id)?;
 					match node_packet {
 						NodePacket::Ping(ping_id) => {
@@ -327,9 +331,8 @@ impl Node {
 						},
 						NodePacket::PingResponse(ping_id) => {
 							// Acknowledge ping
-							let ticks = self.ticks;
 							let session = self.remote_mut(&return_node_id)?.session_mut()?;
-							session.tracker.acknowledge_ping(ping_id, ticks)?;
+							session.tracker.acknowledge_ping(ping_id, current_time)?;
 						},
 						// Request from another node to reciprocate DirectTest
 						NodePacket::PeerRequest => {
@@ -340,7 +343,7 @@ impl Node {
 							match session.test_direct() {
 								None => self.action(NodeAction::TestPeer(return_node_id, 1000)),
 								Some(true) => { 
-									self.direct_nodes.push(session_id, Reverse(distance));
+									self.peered_nodes.push(session_id, Reverse(distance));
 									self.action(NodeAction::NotifyNewNode(return_node_id))
 								},
 								Some(false) => { log::warn!("PeerRequest from {} not viable", return_node_id) },
@@ -351,7 +354,7 @@ impl Node {
 							let num_requests = usize::min(requests, MAX_REQUEST_PINGS); // Maximum of 10 requests
 
 							let want_ping_packet = NodePacket::WantPing(return_node_id, self.remote(&return_node_id)?.session()?.return_net_id);
-							for (session_id, _) in self.direct_nodes.iter().take(num_requests) {
+							for (session_id, _) in self.peered_nodes.iter().take(num_requests) {
 								let node_id = self.sessions.get(session_id).ok_or(PacketParseError::UnknownSession { session_id: *session_id })?;
 								let remote = self.remote(node_id)?;
 								// Generate packet sent to nearby remotes that this node wants to be pinged (excluding requester)
@@ -369,18 +372,18 @@ impl Node {
 								// Attempt to send AcceptWantPing Packet after a certain number of ticks after initial connection request
 								// This is to prevent connections with far away nodes
 								let packet_action = NodeAction::Packet(requesting_node_id, NodePacket::AcceptWantPing(return_node_id))
-									.gen_condition(NodeActionCondition::RunAt(self.ticks + WANT_PING_CONN_TIMEOUT));
+									.gen_condition(NodeActionCondition::RunAt(current_time + WANT_PING_CONN_TIMEOUT));
 								self.action(packet_action);
 							} else { log::warn!("Node({}) received own WantPing", self.node_id) }
 							
 						},
 						NodePacket::AcceptWantPing(_intermediate_node_id) => {
-							if self.direct_nodes.len() < TARGET_DIRECT_NODES {
+							if self.peered_nodes.len() < TARGET_DIRECT_NODES {
 								self.action(NodeAction::TestPeer(return_node_id, 1000));
 							}
 						},
 						NodePacket::NewPeersHint(unknown_node_id) => {
-							if self.direct_nodes.len() < TARGET_DIRECT_NODES && self.remote(&unknown_node_id).is_err() {
+							if self.peered_nodes.len() < TARGET_DIRECT_NODES && self.remote(&unknown_node_id).is_err() {
 								self.action(NodeAction::RequestPeers(return_node_id, TARGET_DIRECT_NODES/2));
 							}
 						},

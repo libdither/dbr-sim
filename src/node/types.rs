@@ -1,7 +1,7 @@
 use crate::internet::{InternetID, InternetPacket};
 
 pub use crate::node::session::{RemoteSession, SessionError, SessionType};
-use crate::node::session::{PingID};
+use crate::node::session::PingID;
 
 use thiserror::Error;
 
@@ -51,6 +51,8 @@ pub enum NodePacket {
 	/// NodeID: Accepting node's public key (signed and encrypted with requesting node's public key)
 	RouteAccept(RouteCoord, NodeID),
 }
+pub const NUM_NODE_PACKETS: usize = 10;
+
 impl NodePacket {
 	pub fn encrypt(self, session_id: SessionID) -> NodeEncryption { NodeEncryption::Session { session_id, packet: self } }
 }

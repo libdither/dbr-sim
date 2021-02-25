@@ -1,11 +1,11 @@
-use std::cmp::Reverse;
+use std::{cmp::Reverse, mem::{Discriminant, discriminant}, collections::HashMap};
 
 use ta::{indicators::{SimpleMovingAverage, StandardDeviation}, Next};
 use thiserror::Error;
 use priority_queue::PriorityQueue;
 
 use crate::internet::{InternetID, InternetPacket};
-use crate::node::{SessionID, NodeID, RouteScalar, RouteCoord, NodePacket};
+use crate::node::{SessionID, NodeID, RouteScalar, RouteCoord, NodePacket, types::NUM_NODE_PACKETS};
 
 /// Number that uniquely identifies a ping request so that multiple Pings may be sent at the same time
 pub type PingID = u64;
@@ -110,16 +110,19 @@ pub enum SessionError {
 	NoPeerSession,
 }
 
-#[derive(Debug)]
+#[derive(Derivative)]
+#[derivative(Debug)]
 pub struct RemoteSession {
 	pub session_id: SessionID, // All connections must have a SessionID for encryption
 	pub session_type: SessionType, //  Sessions can either be Routed through other nodes or Directly Connected
 	pub tracker: SessionTracker,
 	pub return_net_id: InternetID,
+	#[derivative(Debug="ignore")]
+	pub last_packet_times: HashMap<Discriminant<NodePacket>, usize> // Maps Packets to time last sent
 }
 impl RemoteSession {
 	pub fn new(session_id: SessionID, session_type: SessionType, return_net_id: InternetID) -> Self {
-		Self { session_id, session_type, tracker: SessionTracker::new(), return_net_id }
+		Self { session_id, session_type, tracker: SessionTracker::new(), return_net_id, last_packet_times: HashMap::with_capacity(NUM_NODE_PACKETS) }
 	}
 	pub fn random(return_net_id: InternetID) -> Self { Self::new(rand::random(), SessionType::Normal, return_net_id) }
 
@@ -138,6 +141,17 @@ impl RemoteSession {
 	pub fn is_peer(&self) -> bool { if let SessionType::Peer(_) = self.session_type { true } else { false } }
 	pub fn peer_session(&self) -> Result<&PeerSession, SessionError> { match &self.session_type { SessionType::Peer(peer_session) => Ok(peer_session), _ => Err(SessionError::NoPeerSession) } }
 	pub fn peer_session_mut(&mut self) -> Result<&mut PeerSession, SessionError> { match &mut self.session_type { SessionType::Peer(peer_session) => Ok(peer_session), _ => Err(SessionError::NoPeerSession), } }
+	
+	/// Returns how long ago (in ticks) a packet was last sent or None if packet has never been sent
+	pub fn check_packet_time(&mut self, packet: &NodePacket, current_time: usize) -> Option<usize> {
+		if let Some(last_time) = self.last_packet_times.get_mut(&discriminant(packet)) {
+			let difference = current_time - *last_time;
+			*last_time = current_time;
+			Some(difference)
+		} else { 
+			self.last_packet_times.insert(discriminant(packet), current_time); None
+		}
+	}
 	/// Generate InternetPacket from NodePacket doing whatever needs to be done to route it through the network securely
 	pub fn gen_packet(&self, packet: NodePacket) -> Result<InternetPacket, SessionError> {
 		match &self.session_type {
