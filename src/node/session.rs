@@ -61,8 +61,8 @@ impl SessionTracker {
 	pub fn distance(&self) -> RouteScalar {
 		self.dist_avg
 	}
-	/// Returns Some if the connection has been tested enough
-	/// Returns Some(true) if it is a viable connection
+	/// Normals Some if the connection has been tested enough
+	/// Normals Some(true) if it is a viable connection
 	pub fn is_viable(&self) -> Option<bool> {
 		if self.ping_count >= 2 {
 			Some(self.dist_dev < 1)
@@ -72,16 +72,11 @@ impl SessionTracker {
 }
 /// Represents session that is routed directly (through the internet)
 #[derive(Default, Debug)]
-pub struct DirectSession {
-	pub was_requested: bool,
+pub struct PeerSession {
+	pub is_peer: bool,
 }
-impl DirectSession {
-	fn new(was_requested: bool) -> Self { Self { was_requested } }
-	/// Check if allowed to send a DirectRequest
-	pub fn gen_direct_request(&mut self) -> Option<NodePacket> {
-		if !self.was_requested { self.was_requested = true; Some(NodePacket::DirectRequest) }
-		else { None }
-	}
+impl PeerSession {
+	fn new() -> Self { Self { is_peer: false } }
 }
 /// Represents session that is routed through alternate nodes
 #[derive(Debug)]
@@ -93,24 +88,26 @@ pub struct RoutedSession {
 #[derive(Debug, Derivative)]
 #[derivative(Default(bound=""))]
 pub enum SessionType {
-	// Directly connected
-	Direct(DirectSession),
+	// Normal connection
+	#[derivative(Default)]
+	Normal,
+	// Testing for Peer viability
+	TestingPeer,
+	// Collaborative point-to-point connection (keeps track of peer vitality and other stuff)
+	Peer(PeerSession),
 	// Routed session
 	Routed(RoutedSession),
-	// Return to sender connection
-	#[derivative(Default)]
-	Return,
 }
 impl SessionType {
-	pub fn direct(was_requested: bool) -> Self { Self::Direct(DirectSession::new(was_requested)) }
+	fn peer() -> Self { Self::Peer(PeerSession::new()) }
 }
 
 #[derive(Error, Debug)]
 pub enum SessionError {
     #[error("There is no previous ping sent out with ID: {ping_id:?} or ping was forgotten")]
 	UnknownPingID { ping_id: PingID },
-	#[error("This session is not Direct")]
-	NoDirectSessionError,
+	#[error("This session is not a Peer session")]
+	NoPeerSession,
 }
 
 #[derive(Debug)]
@@ -124,25 +121,29 @@ impl RemoteSession {
 	pub fn new(session_id: SessionID, session_type: SessionType, return_net_id: InternetID) -> Self {
 		Self { session_id, session_type, tracker: SessionTracker::new(), return_net_id }
 	}
-	pub fn random(return_net_id: InternetID) -> Self { Self::new(rand::random(), SessionType::Return, return_net_id) }
-	pub fn with_direct(mut self) -> Self { self.session_type = SessionType::direct(false); self }
-	pub fn request_direct(&mut self, was_requested: bool) {
-		if let SessionType::Return = self.session_type {
-			self.session_type = SessionType::direct(was_requested);
+	pub fn random(return_net_id: InternetID) -> Self { Self::new(rand::random(), SessionType::Normal, return_net_id) }
+
+	pub fn test_direct(&mut self) -> Option<bool> {
+		match self.session_type {
+			SessionType::Normal => { self.session_type = SessionType::TestingPeer; self.test_direct() },
+			SessionType::TestingPeer => {
+				let is_viable = self.tracker.is_viable();
+				if Some(true) == is_viable { self.session_type = SessionType::peer() }
+				is_viable
+			}
+			_ => Some(false), // Is not a Normal or TestingPeer session, no test can be performed
 		}
 	}
-	pub fn is_direct(&self) -> bool { match self.session_type { SessionType::Direct(_) => true, _ => false} }
-	pub fn direct(&self) -> Result<&DirectSession, SessionError> { match &self.session_type { SessionType::Direct(direct) => Ok(direct), _ => Err(SessionError::NoDirectSessionError) } }
-	pub fn direct_mut(&mut self) -> Result<&mut DirectSession, SessionError> { match &mut self.session_type { SessionType::Direct(direct) => Ok(direct), _ => Err(SessionError::NoDirectSessionError), } }
+
+	pub fn is_peer(&self) -> bool { if let SessionType::Peer(_) = self.session_type { true } else { false } }
+	pub fn peer_session(&self) -> Result<&PeerSession, SessionError> { match &self.session_type { SessionType::Peer(peer_session) => Ok(peer_session), _ => Err(SessionError::NoPeerSession) } }
+	pub fn peer_session_mut(&mut self) -> Result<&mut PeerSession, SessionError> { match &mut self.session_type { SessionType::Peer(peer_session) => Ok(peer_session), _ => Err(SessionError::NoPeerSession), } }
 	/// Generate InternetPacket from NodePacket doing whatever needs to be done to route it through the network securely
 	pub fn gen_packet(&self, packet: NodePacket) -> Result<InternetPacket, SessionError> {
 		match &self.session_type {
-			SessionType::Direct(_) => {
+			SessionType::Normal | SessionType::Peer(_) | SessionType::TestingPeer => {
 				Ok(packet.encrypt(self.session_id).package(0, self.return_net_id))
 			},
-			SessionType::Return => {
-				Ok(packet.encrypt(self.session_id).package(0, self.return_net_id))
-			}
 			_ => todo!(),
 		}
 	}

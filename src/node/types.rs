@@ -22,9 +22,7 @@ pub enum NodePacket {
 	PingResponse(PingID), // Acknowledge Ping(u64), sends back originally sent number
 
 	/// Request Direct Connection
-	DirectRequest,
-	/// Direct Connection Response
-	DirectResponse,
+	PeerRequest,
 
 	/// Request to a peer for them to request their peers to ping me
 	RequestPings(usize), // usize: max number of pings
@@ -97,7 +95,7 @@ impl RemoteNode {
 	}
 	/// Acknowledge a NodeEncryption::Handshake and generate a NodeEncryption::Acknowledge to send back
 	pub fn gen_acknowledgement(&mut self, recipient: NodeID, session_id: SessionID, return_net_id: InternetID) -> NodeEncryption {
-		self.session = Some(RemoteSession::new(session_id, SessionType::Return, return_net_id));
+		self.session = Some(RemoteSession::new(session_id, SessionType::Normal, return_net_id));
 		NodeEncryption::Acknowledge { session_id, acknowledger: recipient }
 	}
 	/// Receive Acknowledgement of previously sent handshake and enable RemoteSession

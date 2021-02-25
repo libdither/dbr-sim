@@ -97,7 +97,7 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
 						if let Some(Ok(remote_net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
 							println!("Connecting NodeID({:?}) to NodeID({:?}), InternetID({:?}))", node.node_id, remote_node_id, remote_net_id);
-							node.action(NodeAction::ConnectDirect(remote_node_id, remote_net_id));
+							node.action(NodeAction::Connect(remote_node_id, remote_net_id));
 						} else { Err("node: connect: requires InternetID to bootstrap off of")? }
 					} else { Err("node: connect: requires a NodeID to establish secure connection")? }
 				},

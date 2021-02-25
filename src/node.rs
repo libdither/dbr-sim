@@ -22,8 +22,8 @@ use session::{RemoteSession, SessionError};
 pub enum NodeActionCondition {
 	/// Yields if there is a session of any kind with NodeID
 	Session(NodeID),
-	/// Yields if there is a DirectSession with NodeID
-	DirectSession(NodeID), 
+	/// Yields if there is a PeerSession with NodeID
+	PeerSession(NodeID), 
 	/// Yields if node been considered as candidate for self.direct_node
 	PeerTested(NodeID), 
 	/// Yields if a time in the future has passed
@@ -43,9 +43,9 @@ impl NodeActionCondition {
 			// Yields if there is a session
 			NodeActionCondition::Session(node_id) => node.remote(&node_id)?.session_active().then(||self),
 			// Yields if there is a session and it is direct
-			NodeActionCondition::DirectSession(node_id) => {
+			NodeActionCondition::PeerSession(node_id) => {
 				let remote = node.remote(&node_id)?;
-				(remote.session()?.is_direct() && remote.session_active()).then(||self)
+				(remote.session_active() && remote.session()?.is_peer()).then(||self)
 			},
 			// Yields if direct session is viable
 			NodeActionCondition::PeerTested(node_id) => {
@@ -60,13 +60,13 @@ impl NodeActionCondition {
 #[derive(Debug, Clone)]
 pub enum NodeAction {
 	/// Initiate Handshake with remote NodeID, InternetID
-	ConnectDirect(NodeID, InternetID),
+	Connect(NodeID, InternetID),
 	/// Ping a node
 	Ping(NodeID, usize), // Ping node X number of times
 	/// Continually Ping remote until connection is deamed viable or unviable
 	/// * `NodeID`: Node to test
 	/// * `isize`: Timeout for Testing remotes
-	TestDirect(NodeID, isize),
+	TestPeer(NodeID, isize),
 	/// Send specific packet to node
 	Packet(NodeID, NodePacket),
 	/// Request Peers of another node to ping me
@@ -208,13 +208,13 @@ impl Node {
 
 	pub fn parse_action(&mut self, action: &NodeAction, outgoing: &mut Vec<InternetPacket>) -> Result<bool, ActionError> {
 		match action.clone() {
-			// ConnectDirect to remote node
-			NodeAction::ConnectDirect(remote_node_id, remote_net_id) => {
+			// Connect to remote node
+			NodeAction::Connect(remote_node_id, remote_net_id) => {
 				// Insert RemoteNode if doesn't exist
 				let remote = self.remotes.entry(remote_node_id).or_insert(RemoteNode::new(remote_node_id));
 				// Run Handshake if no active session
 				if !remote.session_active() {
-					let packet = remote.gen_handshake(self.node_id, RemoteSession::random(remote_net_id).with_direct());
+					let packet = remote.gen_handshake(self.node_id, RemoteSession::random(remote_net_id));
 					let packet = packet.package(self.net_id, remote_net_id);
 					outgoing.push(packet);
 				}
@@ -228,33 +228,35 @@ impl Node {
 					outgoing.push(packet);
 				}
 			},
-			NodeAction::TestDirect(remote_node_id, timeout) => {
+			NodeAction::TestPeer(remote_node_id, timeout) => {
 				let self_node_id = self.node_id;
 
 				let session = self.remote_mut(&remote_node_id)?.session_mut()?;
-				if !session.is_direct() { return Ok(true) }
+
 				let pending_pings = session.tracker.pending_pings();
-				let is_viable = session.tracker.is_viable();
-				log::trace!("Node({}) Testing Node({}). Is viable: {:?},  pending pings: {:?}, ping_count: {:?}", self_node_id, remote_node_id, is_viable, pending_pings, session.tracker.ping_count);
+				let test_results = session.test_direct();
+				log::trace!("Node({}) Testing Node({}). Is viable: {:?},  pending pings: {:?}, ping_count: {:?}", self_node_id, remote_node_id, test_results, pending_pings, session.tracker.ping_count);
 				
 				let (session_id, rev_distance) = (session.session_id, Reverse(session.tracker.distance()));
-				match is_viable {
+				match test_results {
+					// Need to ping more to get better test result
 					None => {
 						if pending_pings < 2 {
-							self.action(NodeAction::Ping(remote_node_id, 2).gen_condition(NodeActionCondition::DirectSession(remote_node_id)));
+							self.action(NodeAction::Ping(remote_node_id, 2).gen_condition(NodeActionCondition::Session(remote_node_id)));
 						}
 						if timeout > 0 {
-							self.action(NodeAction::TestDirect(remote_node_id, timeout - 300).gen_condition(NodeActionCondition::RunAt(self.ticks + 300)));
+							self.action(NodeAction::TestPeer(remote_node_id, timeout - 300).gen_condition(NodeActionCondition::RunAt(self.ticks + 300)));
 						} else { log::warn!("Direct Test timed out: {:?}", action) }
 					},
+					// Test result comes back true or false. true 
 					Some(status) => {
 						if status {
-							if let Some(packet) = session.direct_mut()?.gen_direct_request() { 
-								self.action(NodeAction::Packet(remote_node_id, packet));
-							}
+							// Send reciptical PeerTest request
+							self.action(NodeAction::Packet(remote_node_id, NodePacket::PeerRequest));
 							self.direct_nodes.push(session_id, rev_distance);
 							self.action(NodeAction::NotifyNewNode(remote_node_id));
 						}
+						return Ok(true);
 					}
 				}
 			},
@@ -267,15 +269,18 @@ impl Node {
 			}
 			NodeAction::Bootstrap(remote_node_id, net_id) => {
 				// Connect directly to node
-				self.action(NodeAction::ConnectDirect(remote_node_id, net_id));
+				self.action(NodeAction::Connect(remote_node_id, net_id));
 				// Test Direct connection
-				self.action(NodeAction::TestDirect(remote_node_id, 3000).gen_condition(NodeActionCondition::DirectSession(remote_node_id)));
+				self.action(NodeAction::TestPeer(remote_node_id, 3000).gen_condition(NodeActionCondition::Session(remote_node_id)));
 				// Ask for Pings
 				self.action(NodeAction::RequestPeers(remote_node_id, TARGET_DIRECT_NODES/2).gen_condition(NodeActionCondition::PeerTested(remote_node_id)));
 			},
 			NodeAction::NotifyNewNode(new_node_id) => {
-				for (node, _) in &self.direct_nodes {
-					self.remote(&self.sessions[node])?.add_packet(NodePacket::NewPeersHint(new_node_id), outgoing)?;
+				for (session, _) in &self.direct_nodes {
+					let direct_node_id = &self.sessions[session];
+					if *direct_node_id != new_node_id { // Don't notify the node that the notification is about
+						self.remote(&new_node_id)?.add_packet(NodePacket::NewPeersHint(new_node_id), outgoing)?;
+					}
 				}
 			}
 			NodeAction::Route(_remote_node_id, _remote_route_coord ) => {},
@@ -327,19 +332,18 @@ impl Node {
 							session.tracker.acknowledge_ping(ping_id, ticks)?;
 						},
 						// Request from another node to reciprocate DirectTest
-						NodePacket::DirectRequest => {
+						NodePacket::PeerRequest => {
 							// Make sure Session is direct
 							let session = self.remote_mut(&return_node_id)?.session_mut()?;
-							session.request_direct(true);
 							
 							let distance = session.tracker.distance();
-							match session.tracker.is_viable() {
-								None => self.action(NodeAction::TestDirect(return_node_id, 3000)),
+							match session.test_direct() {
+								None => self.action(NodeAction::TestPeer(return_node_id, 1000)),
 								Some(true) => { 
 									self.direct_nodes.push(session_id, Reverse(distance));
 									self.action(NodeAction::NotifyNewNode(return_node_id))
 								},
-								Some(false) => {},
+								Some(false) => { log::warn!("PeerRequest from {} not viable", return_node_id) },
 							};
 						}
 						NodePacket::RequestPings(requests) => {
@@ -361,7 +365,7 @@ impl Node {
 						NodePacket::WantPing(requesting_node_id, requesting_net_id) => {
 							if self.node_id != requesting_node_id {
 								// Connect to requested node
-								self.action(NodeAction::ConnectDirect(requesting_node_id, requesting_net_id));
+								self.action(NodeAction::Connect(requesting_node_id, requesting_net_id));
 								// Attempt to send AcceptWantPing Packet after a certain number of ticks after initial connection request
 								// This is to prevent connections with far away nodes
 								let packet_action = NodeAction::Packet(requesting_node_id, NodePacket::AcceptWantPing(return_node_id))
@@ -371,8 +375,9 @@ impl Node {
 							
 						},
 						NodePacket::AcceptWantPing(_intermediate_node_id) => {
-							self.remote_mut(&return_node_id)?.session_mut()?.request_direct(false);
-							self.action(NodeAction::TestDirect(return_node_id, 1000));
+							if self.direct_nodes.len() < TARGET_DIRECT_NODES {
+								self.action(NodeAction::TestPeer(return_node_id, 1000));
+							}
 						},
 						NodePacket::NewPeersHint(unknown_node_id) => {
 							if self.direct_nodes.len() < TARGET_DIRECT_NODES && self.remote(&unknown_node_id).is_err() {
