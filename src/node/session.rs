@@ -118,7 +118,7 @@ pub struct RemoteSession {
 	pub tracker: SessionTracker,
 	pub return_net_id: InternetID,
 	#[derivative(Debug="ignore")]
-	pub last_packet_times: HashMap<Discriminant<NodePacket>, usize> // Maps Packets to time last sent
+	pub last_packet_times: HashMap<(Discriminant<NodePacket>, NodeID), usize> // Maps Packets to time last sent
 }
 impl RemoteSession {
 	pub fn new(session_id: SessionID, session_type: SessionType, return_net_id: InternetID) -> Self {
@@ -143,13 +143,13 @@ impl RemoteSession {
 	pub fn peer_session_mut(&mut self) -> Result<&mut PeerSession, SessionError> { match &mut self.session_type { SessionType::Peer(peer_session) => Ok(peer_session), _ => Err(SessionError::NoPeerSession), } }
 	
 	/// Returns how long ago (in ticks) a packet was last sent or None if packet has never been sent
-	pub fn check_packet_time(&mut self, packet: &NodePacket, current_time: usize) -> Option<usize> {
-		if let Some(last_time) = self.last_packet_times.get_mut(&discriminant(packet)) {
+	pub fn check_packet_time(&mut self, packet: &NodePacket, sending_node_id: NodeID, current_time: usize) -> Option<usize> {
+		if let Some(last_time) = self.last_packet_times.get_mut(&(discriminant(packet), sending_node_id)) {
 			let difference = current_time - *last_time;
 			*last_time = current_time;
 			Some(difference)
 		} else { 
-			self.last_packet_times.insert(discriminant(packet), current_time); None
+			self.last_packet_times.insert((discriminant(packet), sending_node_id), current_time); None
 		}
 	}
 	/// Generate InternetPacket from NodePacket doing whatever needs to be done to route it through the network securely

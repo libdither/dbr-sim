@@ -320,7 +320,7 @@ impl Node {
 				Session { session_id, packet: node_packet } => {
 					let return_node_id = *self.sessions.get(&session_id).ok_or(PacketParseError::UnknownSession { session_id })?;
 					let current_time = self.ticks;
-					let packet_last_received  = self.remote_mut(&return_node_id)?.session_mut()?.check_packet_time(&node_packet, current_time);
+					let packet_last_received  = self.remote_mut(&return_node_id)?.session_mut()?.check_packet_time(&node_packet, return_node_id, current_time);
 					
 					log::debug!("[{: >4}] Node({}) received NodePacket::{:?} from NodeID({}), InternetID({})", current_time, self.node_id, node_packet, return_node_id, received_packet.src_addr);
 					//let return_remote = self.remote_mut(&return_node_id)?;
@@ -350,6 +350,7 @@ impl Node {
 							};
 						}
 						NodePacket::RequestPings(requests) => {
+							if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
 							// Loop through first min(N,MAX_REQUEST_PINGS) items of priorityqueue
 							let num_requests = usize::min(requests, MAX_REQUEST_PINGS); // Maximum of 10 requests
 
@@ -366,6 +367,7 @@ impl Node {
 						},
 						// Initiate Direct Handshakes with people who want pings
 						NodePacket::WantPing(requesting_node_id, requesting_net_id) => {
+							if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
 							if self.node_id != requesting_node_id {
 								// Connect to requested node
 								self.action(NodeAction::Connect(requesting_node_id, requesting_net_id));
@@ -378,11 +380,13 @@ impl Node {
 							
 						},
 						NodePacket::AcceptWantPing(_intermediate_node_id) => {
+							if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
 							if self.peered_nodes.len() < TARGET_DIRECT_NODES {
 								self.action(NodeAction::TestPeer(return_node_id, 1000));
 							}
 						},
 						NodePacket::NewPeersHint(unknown_node_id) => {
+							if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
 							if self.peered_nodes.len() < TARGET_DIRECT_NODES && self.remote(&unknown_node_id).is_err() {
 								self.action(NodeAction::RequestPeers(return_node_id, TARGET_DIRECT_NODES/2));
 							}
