@@ -32,8 +32,11 @@ pub enum NodePacket {
 	/// Tell a peer that this node wants a ping (implying a potential direct connection)
 	WantPing(NodeID, InternetID),
 	/// Sent when node accepts a WantPing Request
-	/// NodeID: NodeID of Node who send the request in response to a RequestPings
+	/// * `NodeID`: NodeID of Node who send the request in response to a RequestPings
 	AcceptWantPing(NodeID),
+	/// Sent when node has a new peer that it thinks another node should connect to, prompts a Bootstrap request from other node
+	/// * `NodeID`: NodeID of new node who connected as a direct peer
+	NewPeersHint(NodeID),
 
 	/// Represents a network traversal packet, It is routed through the network via it's RouteCoord
 	/// Vec<u8>: Represents encrypted data meant for a specific node

@@ -27,7 +27,7 @@ fn main() {
 	internet.add_node(node1);
 
 	let node2 = Node::new(2, internet.lease())
-		.with_action(NodeAction::Bootstrap(0, 0).gen_condition(NodeActionCondition::RunAt(3000)));
+		.with_action(NodeAction::Bootstrap(0, 0));//.gen_condition(NodeActionCondition::RunAt(3000)));
 	internet.add_node(node2);
 
 	internet.run(3000);

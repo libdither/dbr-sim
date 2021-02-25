@@ -1,6 +1,6 @@
 #[allow(dead_code)]
 
-const MAX_DIRECT_NODES: usize = 10;
+const TARGET_DIRECT_NODES: usize = 10;
 // Amount of time to wait to connect to a peer who wants to ping
 const WANT_PING_CONN_TIMEOUT: usize = 300;
 const MAX_REQUEST_PINGS: usize = 10;
@@ -73,6 +73,9 @@ pub enum NodeAction {
 	RequestPeers(NodeID, usize),
 	/// Request another nodes peers to make themselves known
 	Bootstrap(NodeID, InternetID),
+	/// Send notification to all direct nodes that a new direct node was added
+	/// * `NodeID`: NodeID of the new node
+	NotifyNewNode(NodeID),
 	/// Establish a dynamic routed connection
 	Route(NodeID, RouteCoord),
 	/// Condition for a condition to be fulfilled before running imbedded Action
@@ -250,6 +253,7 @@ impl Node {
 								self.action(NodeAction::Packet(remote_node_id, packet));
 							}
 							self.direct_nodes.push(session_id, rev_distance);
+							self.action(NodeAction::NotifyNewNode(remote_node_id));
 						}
 					}
 				}
@@ -267,8 +271,13 @@ impl Node {
 				// Test Direct connection
 				self.action(NodeAction::TestDirect(remote_node_id, 3000).gen_condition(NodeActionCondition::DirectSession(remote_node_id)));
 				// Ask for Pings
-				self.action(NodeAction::RequestPeers(remote_node_id, 10).gen_condition(NodeActionCondition::PeerTested(remote_node_id)));
+				self.action(NodeAction::RequestPeers(remote_node_id, TARGET_DIRECT_NODES/2).gen_condition(NodeActionCondition::PeerTested(remote_node_id)));
 			},
+			NodeAction::NotifyNewNode(new_node_id) => {
+				for (node, _) in &self.direct_nodes {
+					self.remote(&self.sessions[node])?.add_packet(NodePacket::NewPeersHint(new_node_id), outgoing)?;
+				}
+			}
 			NodeAction::Route(_remote_node_id, _remote_route_coord ) => {},
 			// Embedded action is run in main loop
 			NodeAction::Condition(condition, _) => {
@@ -316,20 +325,8 @@ impl Node {
 							let ticks = self.ticks;
 							let session = self.remote_mut(&return_node_id)?.session_mut()?;
 							session.tracker.acknowledge_ping(ping_id, ticks)?;
-							
-							// Add or remove from direct_nodes list depending on if it is a viable connection or not
-							/* match direct_session.is_viable() {
-								Some(false) => self.action(NodeAction::P)
-							}
-							if Some(true) == direct_session.is_viable() {
-								// Log direct nodes
-								let dist = direct_session.distance();
-								self.direct_nodes.push(session_id, Reverse(dist));
-							} else {
-								self.direct_nodes.remove(&session_id);
-							} */
 						},
-						// Request another node to reciprocate a connection test
+						// Request from another node to reciprocate DirectTest
 						NodePacket::DirectRequest => {
 							// Make sure Session is direct
 							let session = self.remote_mut(&return_node_id)?.session_mut()?;
@@ -338,7 +335,10 @@ impl Node {
 							let distance = session.tracker.distance();
 							match session.tracker.is_viable() {
 								None => self.action(NodeAction::TestDirect(return_node_id, 3000)),
-								Some(true) => { self.direct_nodes.push(session_id, Reverse(distance)); },
+								Some(true) => { 
+									self.direct_nodes.push(session_id, Reverse(distance));
+									self.action(NodeAction::NotifyNewNode(return_node_id))
+								},
 								Some(false) => {},
 							};
 						}
@@ -373,6 +373,11 @@ impl Node {
 						NodePacket::AcceptWantPing(_intermediate_node_id) => {
 							self.remote_mut(&return_node_id)?.session_mut()?.request_direct(false);
 							self.action(NodeAction::TestDirect(return_node_id, 1000));
+						},
+						NodePacket::NewPeersHint(unknown_node_id) => {
+							if self.direct_nodes.len() < TARGET_DIRECT_NODES && self.remote(&unknown_node_id).is_err() {
+								self.action(NodeAction::RequestPeers(return_node_id, TARGET_DIRECT_NODES/2));
+							}
 						},
 						/*NodePacket::RouteRequest(target_coord, max_distance, requester_coord, requester_node_id) => {
 							// outgoing.push(value)
