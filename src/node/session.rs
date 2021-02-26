@@ -61,8 +61,8 @@ impl SessionTracker {
 	pub fn distance(&self) -> RouteScalar {
 		self.dist_avg
 	}
-	/// Normals Some if the connection has been tested enough
-	/// Normals Some(true) if it is a viable connection
+	/// Returns Some if the connection has been tested enough
+	/// Returns Some(true) if it is a viable connection
 	pub fn is_viable(&self) -> Option<bool> {
 		if self.ping_count >= 2 {
 			Some(self.dist_dev < 1)
@@ -124,7 +124,7 @@ impl RemoteSession {
 	pub fn new(session_id: SessionID, session_type: SessionType, return_net_id: InternetID) -> Self {
 		Self { session_id, session_type, tracker: SessionTracker::new(), return_net_id, last_packet_times: HashMap::with_capacity(NUM_NODE_PACKETS) }
 	}
-	pub fn random(return_net_id: InternetID) -> Self { Self::new(rand::random(), SessionType::Normal, return_net_id) }
+	pub fn from_id(session_id: SessionID, return_net_id: InternetID) -> Self { Self::new(session_id, SessionType::Normal, return_net_id) }
 
 	pub fn test_direct(&mut self) -> Option<bool> {
 		match self.session_type {

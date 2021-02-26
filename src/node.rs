@@ -15,7 +15,7 @@ pub use crate::internet::{CustomNode, InternetID, InternetPacket};
 mod types;
 mod session;
 pub use types::{NodeID, SessionID, RouteCoord, NodePacket, NodeEncryption, RemoteNode, RemoteNodeError, RouteScalar};
-use session::{RemoteSession, SessionError};
+use session::SessionError;
 
 #[derive(Debug, Clone)]
 /// A condition that should be satisfied before an action is executed
@@ -37,7 +37,7 @@ pub enum NodeActionConditionError {
 	RemoteNodeError(#[from] RemoteNodeError),
 }
 impl NodeActionCondition {
-	// Returns Some(Self) if condition should be tested again, else returns None if condition is passed
+	// Returns None if condition should be tested again, else returns Some(Self) if condition is passed
 	fn test(self, node: &mut Node) -> Result<Option<Self>, NodeActionConditionError> {
 		Ok(match self {
 			// Yields if there is a session
@@ -49,7 +49,11 @@ impl NodeActionCondition {
 			},
 			// Yields if direct session is viable
 			NodeActionCondition::PeerTested(node_id) => {
-				(node.remote_mut(&node_id)?.session_mut()?.tracker.is_viable().is_some()).then(||self)
+				let remote = node.remote_mut(&node_id)?;
+				if remote.session_active() {
+					println!("Active");
+					remote.session_mut()?.tracker.is_viable().is_none().then(||self)
+				} else { false.then(||self) }
 			},
 			// Yields if a specified amount of time has passed
 			NodeActionCondition::RunAt(time) => (node.ticks >= time).then(||self),
@@ -215,8 +219,7 @@ impl Node {
 				let remote = self.remotes.entry(remote_node_id).or_insert(RemoteNode::new(remote_node_id));
 				// Run Handshake if no active session
 				if !remote.session_active() {
-					let packet = remote.gen_handshake(self.node_id, RemoteSession::random(remote_net_id));
-					let packet = packet.package(self.net_id, remote_net_id);
+					let packet = remote.gen_handshake(self.node_id, self.ticks).package(self.net_id, remote_net_id);
 					outgoing.push(packet);
 				}
 			},
@@ -298,23 +301,20 @@ impl Node {
 			use NodeEncryption::*;
 			let encrypted = NodeEncryption::unpackage(&received_packet)?;
 			match encrypted {
-				Handshake { recipient, session_id, signer } => {
+				Handshake { recipient, session_id, signer, time_sent } => {
 					log::debug!("[{: >4}] Node({:?}) Received Handshake: {:?}", self.ticks, self.node_id, encrypted);
-					if recipient == self.node_id {
-						// If receive a Handshake Request, acknowledge it
-						let remote = self.remotes.entry(signer).or_insert(RemoteNode::new(signer));
-						let acknowledge_packet = remote.gen_acknowledgement(recipient, session_id, received_packet.src_addr);
-						self.sessions.insert(session_id, signer); // Register to SessionID index
-						outgoing.push(acknowledge_packet.package(self.net_id, received_packet.src_addr));
-					} else {
-						return Err( PacketParseError::InvalidHandshakeRecipient { node_id: recipient } )
-					}
+					// If receive a Handshake Request, acknowledge it
+					let my_node_id = self.node_id;
+					let remote = self.remotes.entry(signer).or_insert(RemoteNode::new(signer));
+					let acknowledge_packet = remote.gen_acknowledgement(recipient, session_id, time_sent, my_node_id, received_packet.src_addr)?;
+					self.sessions.insert(session_id, signer); // Register to SessionID index
+					outgoing.push(acknowledge_packet.package(self.net_id, received_packet.src_addr));
 				},
 				Acknowledge { session_id, acknowledger } => {
 					log::debug!("[{: >4}] Node({:?}) Received Acknowledgement: {:?}", self.ticks, self.node_id, encrypted);
 					// If receive an Acknowledge request, validate Handshake previously sent out
 					let remote = self.remote_mut(&acknowledger)?;
-					remote.validate_handshake(session_id, acknowledger)?;
+					remote.validate_session(session_id, received_packet.src_addr)?;
 					self.sessions.insert(session_id, acknowledger); // Register to SessionID index
 				},
 				Session { session_id, packet: node_packet } => {

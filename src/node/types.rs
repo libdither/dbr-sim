@@ -61,26 +61,32 @@ pub enum RemoteNodeError {
     #[error("There is no active session with the node: {node_id:?}")]
 	NoSessionError { node_id: NodeID },
 	#[error("Session ID passed: {passed:?} does not match existing session ID")]
-    UnknownAcknowledgement { passed: SessionID },
+    UnknownAck { passed: SessionID },
+	#[error("Unknown Acknowledgement Recipient: {recipient:?}")]
+    UnknownAckRecipient { recipient: NodeID },
+	#[error("Received Acknowledgement even though there are no pending handshake requests")]
+	NoPendingHandshake,
+	#[error("Received handshake but earlier handshake request was already pending")]
+	SimultaneousHandshake,
 	#[error("Session Error")]
 	SessionError(#[from] SessionError),
 }
 #[derive(Debug)]
 pub struct RemoteNode {
 	pub node_id: NodeID, // The ID of the remote node
-	handshake_pending: bool,
+	handshake_pending: Option<(usize, SessionID)>, // is Some(current_time, session_id) if handshake request is pending acknowledgement
 	session: Option<RemoteSession>, // Session object, is None if no connection is active
 }
 impl RemoteNode {
 	pub fn new(node_id: NodeID) -> Self {
 		Self {
 			node_id,
-			handshake_pending: false,
+			handshake_pending: None,
 			session: None,
 		}
 	}
 	pub fn session_active(&self) -> bool {
-		self.session.is_some() && !self.handshake_pending
+		self.session.is_some() && self.handshake_pending.is_none()
 	}
 	pub fn session(&self) -> Result<&RemoteSession, RemoteNodeError> {
 		self.session.as_ref().ok_or( RemoteNodeError::NoSessionError { node_id: self.node_id } )
@@ -89,25 +95,37 @@ impl RemoteNode {
 		self.session.as_mut().ok_or( RemoteNodeError::NoSessionError { node_id: self.node_id } )
 	}
 	/// This function creates a NodeEncryption::Handshake object to be sent to a peer that secure communication should be established with
-	pub fn gen_handshake(&mut self, my_node_id: NodeID, session: RemoteSession) -> NodeEncryption {
-		self.handshake_pending = true;
-		let session_id = session.session_id;
-		self.session = Some(session);
-		NodeEncryption::Handshake { recipient: self.node_id, session_id, signer: my_node_id }
+	pub fn gen_handshake(&mut self, my_node_id: NodeID, current_time: usize) -> NodeEncryption {
+		// Generate Handshake to send out
+		let session_id: SessionID = rand::random();
+		self.handshake_pending = Some((current_time, session_id));
+		NodeEncryption::Handshake { recipient: self.node_id, session_id, signer: my_node_id, time_sent: current_time }
 	}
-	/// Acknowledge a NodeEncryption::Handshake and generate a NodeEncryption::Acknowledge to send back
-	pub fn gen_acknowledgement(&mut self, recipient: NodeID, session_id: SessionID, return_net_id: InternetID) -> NodeEncryption {
-		self.session = Some(RemoteSession::new(session_id, SessionType::Normal, return_net_id));
-		NodeEncryption::Acknowledge { session_id, acknowledger: recipient }
+	/// Make note of handshake, create session & send back acknowledgement
+	pub fn gen_acknowledgement(&mut self, recipient: NodeID, session_id: SessionID, time_generated: usize, my_node_id: NodeID, return_net_id: InternetID) -> Result<NodeEncryption, RemoteNodeError> {
+		if recipient != my_node_id { return Err(RemoteNodeError::UnknownAckRecipient { recipient }) }
+		// Check if already sent a handshake
+		if let Some((own_time_sent, _)) = self.handshake_pending {
+			// If I sent it first, return and wait for Acknowledgement
+			if time_generated > own_time_sent { return Err(RemoteNodeError::SimultaneousHandshake) }
+		}
+		// Otherwise gen acknowledgement and session
+		self.session = Some(RemoteSession::from_id(session_id, return_net_id));
+		Ok(NodeEncryption::Acknowledge { session_id, acknowledger: recipient })
 	}
-	/// Receive Acknowledgement of previously sent handshake and enable RemoteSession
-	pub fn validate_handshake(&mut self, session_id: SessionID, acknowledger: NodeID) -> Result<(), RemoteNodeError> {
-		let session = self.session()?;
-		if session.session_id == session_id && self.node_id == acknowledger {
-			self.handshake_pending = false;
-			Ok(())
-		} else { Err( RemoteNodeError::UnknownAcknowledgement { passed: session_id } ) }
+	/// Receive Acknowledgement of previously sent handshake and enable RemoteSession if Acknowledgement was requested
+	pub fn validate_session(&mut self, session_id: SessionID, return_net_id: InternetID) -> Result<(), RemoteNodeError> {
+		// Check if there is actually a handshake pending
+		if let Some((_, sent_session_id)) = self.handshake_pending {
+			// Check if right acknowledgement was received
+			if sent_session_id == session_id {
+				self.handshake_pending = None;
+				self.session = Some(RemoteSession::from_id(session_id, return_net_id));
+				Ok(())
+			} else { Err( RemoteNodeError::UnknownAck { passed: session_id } ) }
+		} else { Err(RemoteNodeError::NoPendingHandshake) }
 	}
+	/// Wrap packet and push to `outgoing` Vec
 	pub fn add_packet(&self, packet: NodePacket, outgoing: &mut Vec<InternetPacket>) -> Result<(), RemoteNodeError> {
 		Ok(outgoing.push(self.session()?.gen_packet(packet)?))
 	}
@@ -116,7 +134,7 @@ impl RemoteNode {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum NodeEncryption {
 	/// Handshake is sent from node wanting to establish secure tunnel to another node
-	Handshake { recipient: NodeID, session_id: SessionID, signer: NodeID },
+	Handshake { recipient: NodeID, session_id: SessionID, signer: NodeID, time_sent: usize },
 	/// When the other node receives the Handshake, they will send back an Acknowledge
 	/// When the original party receives the Acknowledge, that tunnel may now be used 
 	Acknowledge { session_id: SessionID, acknowledger: NodeID },
