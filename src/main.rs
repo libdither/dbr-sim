@@ -81,7 +81,7 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 			println!("{:#?}", internet);
 		},
 		Some(&"graph") => {
-			internet.router.gen_routing_plot("network_graph.png", (500, 500))?;
+			internet.gen_routing_plot("target/network_graph.png", (500, 500))?;
 		},
 		// List nodes
 		Some(&"list") => {
