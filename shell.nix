@@ -6,5 +6,11 @@ pkgs.mkShell {
 		# Build Tools
 		cargo
 		cmake
+		pkg-config
+		freetype
+		fontconfig
 	];
+	shellHook = ''
+    	export PGDATA=./db/content
+	'';
 }

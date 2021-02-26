@@ -2,7 +2,7 @@
 #![allow(unused_variables)]
 
 mod router;
-use router::{InternetRouter, EuclidianLatencyCalculator};
+use router::InternetRouter;
 
 use std::collections::HashMap;
 
@@ -25,7 +25,7 @@ pub trait CustomNode: std::fmt::Debug {
 #[derive(Debug)]
 pub struct InternetSim<CN: CustomNode> {
 	pub nodes: HashMap<InternetID, CN>,
-	router: InternetRouter<EuclidianLatencyCalculator>,
+	pub router: InternetRouter,
 }
 impl<CN: CustomNode> InternetSim<CN> {
 	pub fn new() -> InternetSim<CN> {

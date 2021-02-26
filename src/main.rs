@@ -80,6 +80,9 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 		Some(&"net") => {
 			println!("{:#?}", internet);
 		},
+		Some(&"graph") => {
+			internet.router.gen_routing_plot("network_graph.png", (500, 500))?;
+		},
 		// List nodes
 		Some(&"list") => {
 			if let Some(subcommand) = command.next() {
