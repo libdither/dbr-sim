@@ -68,14 +68,14 @@ impl<CN: CustomNode> InternetSim<CN> {
 			-1f32..1f32,
 			(0..dimensions.0 as i32, 0..dimensions.1 as i32),
 		));
-
+		use plotters::style::text_anchor::{Pos, HPos, VPos};
 		let dot_and_label = |x: f32, y: f32, label: &str| {
 			return EmptyElement::at((x, y))
-				+ Circle::new((0, 0), 10, ShapeStyle::from(&BLACK).stroke_width(3))
+				+ Circle::new((0, 0), 10, ShapeStyle::from(&BLACK).filled())
 				+ Text::new(
 					format!("{}", label),
-					(-3, -3),
-					("sans-serif", 15.0).into_font(),
+					(0, 0),
+					("sans-serif", 15.0).into_font().color(&WHITE).pos(Pos::new(HPos::Center, VPos::Center)),
 				);
 		};
 
@@ -92,7 +92,7 @@ impl<CN: CustomNode> InternetSim<CN> {
 				root.draw(&PathElement::new([node_coord, remote_coord], ShapeStyle::from(&BLACK)))?;
 			}
 		}
-		
+
 		for (net_id, lc) in self.router.speed_map.iter() {
 			let (x, y) = convert_coords(lc.position);
 			root.draw(&dot_and_label(x, y, &net_id.to_string()))?;

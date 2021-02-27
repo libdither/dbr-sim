@@ -34,7 +34,7 @@ fn main() {
 	}
 	
 
-	parse_command(&mut internet, &vec![&"graph"]);
+	parse_command(&mut internet, &vec![&"graph"]).unwrap();
 
 
 	let stdin = io::stdin();
