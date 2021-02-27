@@ -18,6 +18,7 @@ use node::{Node, NodeAction, NodeID, NodeActionCondition};
 fn main() {
 	env_logger::init();
 	println!("Hello, Network!");
+	std::fs::create_dir_all("target/images");
 
 	let mut internet = InternetSim::new();
 	let node = Node::new(0, internet.lease());
@@ -26,15 +27,19 @@ fn main() {
 		.with_action(NodeAction::Bootstrap(0, 0));
 	internet.add_node(node1);
 
-	for i in 2..15 {
-		let node2 = Node::new(i, internet.lease())
-			.with_action(NodeAction::Bootstrap(0, 0));
-		internet.add_node(node2);
-		internet.run(3000);
+	for i in 0..10000 {
+		if i % 3000 == 0 {
+			let node2 = Node::new(i, internet.lease())
+				.with_action(NodeAction::Bootstrap(0, 0));
+			internet.add_node(node2);
+		}
+		/* if i % 100 == 0 {
+			internet.run(100);
+			internet.gen_routing_plot(&format!("target/images/{:0>6}.png", i/100), (500, 500)).expect("Failed to output image");
+		} */
 	}
 	
 
-	parse_command(&mut internet, &vec![&"graph"]).unwrap();
 
 
 	let stdin = io::stdin();
@@ -82,13 +87,13 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 			println!("{:#?}", internet);
 		},
 		Some(&"graph") => {
-			internet.gen_routing_plot("target/network_graph.png", (500, 500))?;
+			internet.gen_routing_plot("target/images/network_snapshot.png", (500, 500))?;
 		},
 		// List nodes
 		Some(&"list") => {
 			if let Some(subcommand) = command.next() {
 				match *subcommand {
-					"peered" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.peered_nodes)),
+					"peered" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.node_list)),
 					_ => { println!("list: unknown subcommand") }
 				}
 			} else {

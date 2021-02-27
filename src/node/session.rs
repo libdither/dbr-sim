@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{cmp::Reverse, mem::{Discriminant, discriminant}, collections::HashMap};
 
 use ta::{indicators::{SimpleMovingAverage, StandardDeviation}, Next};
@@ -73,10 +75,10 @@ impl SessionTracker {
 /// Represents session that is routed directly (through the internet)
 #[derive(Default, Debug)]
 pub struct PeerSession {
-	pub is_peer: bool,
+	pub reciprocal: bool,
 }
 impl PeerSession {
-	fn new() -> Self { Self { is_peer: false } }
+	fn new() -> Self { Self { reciprocal: false } }
 }
 /// Represents session that is routed through alternate nodes
 #[derive(Debug)]
@@ -88,12 +90,13 @@ pub struct RoutedSession {
 #[derive(Debug, Derivative)]
 #[derivative(Default(bound=""))]
 pub enum SessionType {
-	// Normal connection
+	// Default connection
 	#[derivative(Default)]
 	Normal,
-	// Testing for Peer viability
-	TestingPeer,
-	// Collaborative point-to-point connection (keeps track of peer vitality and other stuff)
+	/// Another node who has notified that they consider me to be a close peer
+	/// * `usize`: How many other nodes are closer
+	IncomingPeer(usize),
+	// Connection that is very close, designated as a peer 
 	Peer(PeerSession),
 	// Routed session
 	Routed(RoutedSession),
@@ -118,30 +121,41 @@ pub struct RemoteSession {
 	pub tracker: SessionTracker,
 	pub return_net_id: InternetID,
 	#[derivative(Debug="ignore")]
-	pub last_packet_times: HashMap<(Discriminant<NodePacket>, NodeID), usize> // Maps Packets to time last sent
+	pub last_packet_times: HashMap<(Discriminant<NodePacket>, NodeID), usize>, // Maps Packets to time last sent
+
+	pub is_testing: bool, // Is this session currently in the process of being tested
 }
 impl RemoteSession {
 	pub fn new(session_id: SessionID, session_type: SessionType, return_net_id: InternetID) -> Self {
-		Self { session_id, session_type, tracker: SessionTracker::new(), return_net_id, last_packet_times: HashMap::with_capacity(NUM_NODE_PACKETS) }
+		Self {
+			session_id,
+			session_type,
+			tracker: SessionTracker::new(),
+			return_net_id,
+			last_packet_times: HashMap::with_capacity(NUM_NODE_PACKETS),
+			is_testing: false,
+		}
 	}
 	pub fn from_id(session_id: SessionID, return_net_id: InternetID) -> Self { Self::new(session_id, SessionType::Normal, return_net_id) }
 
+	/// Test if viable and note that testing is commencing
 	pub fn test_direct(&mut self) -> Option<bool> {
-		match self.session_type {
-			SessionType::Normal => { self.session_type = SessionType::TestingPeer; self.test_direct() },
-			SessionType::TestingPeer => {
-				let is_viable = self.tracker.is_viable();
-				if Some(true) == is_viable { self.session_type = SessionType::peer() }
-				is_viable
-			}
-			_ => Some(false), // Is not a Normal or TestingPeer session, no test can be performed
-		}
+		self.is_testing = true;
+		let is_viable = self.tracker.is_viable();
+		if let Some(_) = is_viable { self.is_testing = false };
+		is_viable
 	}
 
 	pub fn is_peer(&self) -> bool { if let SessionType::Peer(_) = self.session_type { true } else { false } }
-	pub fn peer_session(&self) -> Result<&PeerSession, SessionError> { match &self.session_type { SessionType::Peer(peer_session) => Ok(peer_session), _ => Err(SessionError::NoPeerSession) } }
-	pub fn peer_session_mut(&mut self) -> Result<&mut PeerSession, SessionError> { match &mut self.session_type { SessionType::Peer(peer_session) => Ok(peer_session), _ => Err(SessionError::NoPeerSession), } }
-	
+	pub fn record_peer_notify(&mut self, rank: usize) { 
+		match &mut self.session_type {
+			SessionType::Normal => self.session_type = SessionType::IncomingPeer(rank),
+			SessionType::IncomingPeer(num) => if rank == usize::MAX { self.session_type = SessionType::Normal } else { *num = rank },
+			SessionType::Peer(peer_session) => peer_session.reciprocal = true,
+			_ => {},
+		}
+	}
+
 	/// Returns how long ago (in ticks) a packet was last sent or None if packet has never been sent
 	pub fn check_packet_time(&mut self, packet: &NodePacket, sending_node_id: NodeID, current_time: usize) -> Option<usize> {
 		if let Some(last_time) = self.last_packet_times.get_mut(&(discriminant(packet), sending_node_id)) {
@@ -155,7 +169,7 @@ impl RemoteSession {
 	/// Generate InternetPacket from NodePacket doing whatever needs to be done to route it through the network securely
 	pub fn gen_packet(&self, packet: NodePacket) -> Result<InternetPacket, SessionError> {
 		match &self.session_type {
-			SessionType::Normal | SessionType::Peer(_) | SessionType::TestingPeer => {
+			SessionType::Normal | SessionType::Peer(_) | SessionType::IncomingPeer(_) => {
 				Ok(packet.encrypt(self.session_id).package(0, self.return_net_id))
 			},
 			_ => todo!(),

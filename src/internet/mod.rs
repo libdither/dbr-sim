@@ -86,9 +86,10 @@ impl<CN: CustomNode> InternetSim<CN> {
 		for (net_id, node) in &self.nodes {
 			let node = node.as_any().downcast_ref::<crate::node::Node>().unwrap();
 			let node_coord = convert_coords(self.router.speed_map[net_id].position);
-			for (session_id, _) in &node.peered_nodes {
+			for (session_id, _) in &node.node_list {
 				let remote_net_id = node.remote(&node.sessions[session_id])?.session()?.return_net_id;
 				let remote_coord = convert_coords(self.router.speed_map[&remote_net_id].position);
+				
 				root.draw(&PathElement::new([node_coord, remote_coord], ShapeStyle::from(&BLACK)))?;
 			}
 		}

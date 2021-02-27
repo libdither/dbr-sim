@@ -21,9 +21,6 @@ pub enum NodePacket {
 	/// PingResponse packet, time between Ping and PingResponse is measured
 	PingResponse(PingID), // Acknowledge Ping(u64), sends back originally sent number
 
-	/// Request Direct Connection
-	PeerRequest,
-
 	/// Request to a peer for them to request their peers to ping me
 	RequestPings(usize), // usize: max number of pings
 
@@ -32,9 +29,14 @@ pub enum NodePacket {
 	/// Sent when node accepts a WantPing Request
 	/// * `NodeID`: NodeID of Node who send the request in response to a RequestPings
 	AcceptWantPing(NodeID),
+
+	/// Notify another node of peership
+	/// * `usize`: Rank of how close peer is compared to other nodes, usize::MAX signifies no longer consider node
+	PeerNotify(usize),
+
 	/// Sent when node has a new peer that it thinks another node should connect to, prompts a Bootstrap request from other node
 	/// * `NodeID`: NodeID of new node who connected as a direct peer
-	NewPeersHint(NodeID),
+	// NewPeersHint(NodeID),
 
 	/// Represents a network traversal packet, It is routed through the network via it's RouteCoord
 	/// Vec<u8>: Represents encrypted data meant for a specific node
