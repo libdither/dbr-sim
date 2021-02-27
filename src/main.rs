@@ -23,24 +23,21 @@ fn main() {
 	let mut internet = InternetSim::new();
 	let node = Node::new(0, internet.lease());
 	internet.add_node(node);
-	let node1 = Node::new(1, internet.lease())
-		.with_action(NodeAction::Bootstrap(0, 0));
-	internet.add_node(node1);
 
-	for i in 0..10000 {
-		if i % 3000 == 0 {
-			let node2 = Node::new(i, internet.lease())
-				.with_action(NodeAction::Bootstrap(0, 0));
-			internet.add_node(node2);
-		}
-		/* if i % 100 == 0 {
-			internet.run(100);
-			internet.gen_routing_plot(&format!("target/images/{:0>6}.png", i/100), (500, 500)).expect("Failed to output image");
-		} */
+	for i in 1..10 {
+		let node2 = Node::new(i, internet.lease());
+		internet.add_node(node2);
 	}
-	
+	internet.nodes.iter().for_each(|(id,node)|println!("{}:	{:?}", id, node));
 
-
+	for i in 0..internet.nodes.len() {
+		if let Some(node) = internet.node_mut(i) {
+			node.action(NodeAction::Bootstrap(0,0));
+		} else { log::error!("Node at InternetID({}) doesn't exist", i)}
+		internet.run(3000);
+		internet.gen_routing_plot(&format!("target/images/{:0>6}.png", i), (500, 500)).expect("Failed to output image");
+	}
+	//internet.gen_routing_plot(&format!("target/images/{:0>6}.png", i/100), (500, 500)).expect("Failed to output image");
 
 	let stdin = io::stdin();
 	let split_regex = fancy_regex::Regex::new(r#"((?<=")[^"]*(?=")|[^" ]+)"#).unwrap();
@@ -120,6 +117,12 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 						} else { Err("node: connect: requires InternetID to bootstrap off of")? }
 					} else { Err("node: connect: requires a NodeID to establish secure connection")? }
 				},
+				// Test a remote node
+				Some(&"test") => {
+					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
+						node.action(NodeAction::TestNode(remote_node_id, 1000).gen_condition(NodeActionCondition::Session(remote_node_id)));
+					}
+				}
 				Some(&"bootstrap") | Some(&"boot") => {
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
 						if let Some(Ok(remote_net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
@@ -128,14 +131,7 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 						} else { Err("node: bootstrap: requires InternetID to bootstrap off of")? }
 					} else { Err("node: bootstrap: requires a NodeID to establish secure connection")? }
 				}
-				// Initiate a connection and send some message
-				Some(&"ping") => {
-					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
-						if let Some(Ok(num)) = command.next().map(|s|s.parse::<usize>()) {
-							node.action(NodeAction::Ping(remote_node_id, num).gen_condition(NodeActionCondition::Session(remote_node_id)));
-						}
-					}
-				}
+				
 				Some(&"info") => {
 					println!("Node: {:#?}", internet.node(net_id).ok_or("node: info: No node matches this InternetID")?);
 				}

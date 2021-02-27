@@ -1,15 +1,15 @@
 #[allow(dead_code)]
 
-const TARGET_DIRECT_NODES: usize = 10;
+const TARGET_PEER_COUNT: usize = 5;
 // Amount of time to wait to connect to a peer who wants to ping
 const WANT_PING_CONN_TIMEOUT: usize = 300;
 const MAX_REQUEST_PINGS: usize = 10;
 
-use std::collections::HashMap;
-use std::cmp::Reverse;
+use std::collections::{HashMap, BTreeMap};
+//use std::cmp::Reverse;
 use std::any::Any;
 
-use priority_queue::PriorityQueue;
+//use priority_queue::PriorityQueue;
 
 pub use crate::internet::{CustomNode, InternetID, InternetPacket};
 
@@ -71,10 +71,15 @@ pub enum NodeAction {
 	/// * `NodeID`: Node to test
 	/// * `isize`: Timeout for Testing remotes
 	TestNode(NodeID, isize),
-	/// Send specific packet to node
-	Packet(NodeID, NodePacket),
+	/// Test node if need new nodes
+	MaybeTestNode(NodeID),
 	/// Request Peers of another node to ping me
 	RequestPeers(NodeID, usize),
+	/// Attempt to establish peership with another node
+	/// Will not sent NotifyPeer if node list rank > TARGET_PEER_COUNT
+	TryNotifyPeer(NodeID),
+	/// Send specific packet to node
+	Packet(NodeID, NodePacket),
 	/// Request another nodes peers to make themselves known
 	Bootstrap(NodeID, InternetID),
 	/// Establish a dynamic routed connection
@@ -94,11 +99,11 @@ pub struct Node {
 	pub net_id: InternetID,
 
 	pub route_coord: RouteCoord,
-	ticks: usize, // Amount of time passed since startup of this node
+	pub ticks: usize, // Amount of time passed since startup of this node
 
 	pub remotes: HashMap<NodeID, RemoteNode>, // All the remotes this node knows
 	pub sessions: HashMap<SessionID, NodeID>, // All the sessions currently active
-	pub node_list: PriorityQueue<NodeID, Reverse<RouteScalar>>, // All tested nodes sorted by distance
+	pub node_list: BTreeMap<RouteScalar, NodeID>, // All tested nodes sorted by distance
 	// pub peered_nodes: PriorityQueue<SessionID, Reverse<RouteScalar>>, // Top subset of all 
 	pub actions_queue: Vec<NodeAction>, // Actions will wait here until NodeID session is established
 }
@@ -226,6 +231,20 @@ impl Node {
 					outgoing.push(packet);
 				}
 			},
+			NodeAction::MaybeTestNode(remote_node_id) => {
+				// If need more nodes
+				if self.node_list.len() < TARGET_PEER_COUNT {
+					// If have active session
+					if let Ok(session) = self.remote(&remote_node_id)?.session() {
+						// If node is not currently being tested, and this node is not already tested
+						if !session.is_testing && self.node_list.iter().find(|(_, &id)|id==remote_node_id).is_none() {
+							// Test the node!
+							self.action(NodeAction::TestNode(remote_node_id, 3000));
+						}
+					}
+				}
+				
+			}
 			NodeAction::TestNode(remote_node_id, timeout) => {
 				let self_node_id = self.node_id;
 
@@ -235,7 +254,7 @@ impl Node {
 				let test_results = session.test_direct();
 				log::trace!("Node({}) Testing Node({}). Is viable: {:?},  pending pings: {:?}, ping_count: {:?}", self_node_id, remote_node_id, test_results, pending_pings, session.tracker.ping_count);
 				
-				let (session_id, rev_distance) = (session.session_id, Reverse(session.tracker.distance()));
+				let distance = session.tracker.distance();
 				match test_results {
 					// Need to ping more to get better test result
 					None => {
@@ -249,26 +268,35 @@ impl Node {
 					// Test result comes back true or false. true 
 					Some(status) => {
 						if status {
-							self.node_list.push(session_id, rev_distance);
+							self.node_list.insert(distance, remote_node_id);
+							// If close, send peer request
+							if self.node_list.iter().take(TARGET_PEER_COUNT).find(|(_,&id)|id == remote_node_id).is_some() {
+								self.action(NodeAction::RequestPeers(remote_node_id, TARGET_PEER_COUNT))
+							}
 						}
 						return Ok(true);
 					}
+				}
+			},
+			NodeAction::RequestPeers(remote_node_id, num_peers) => {
+				self.remote_mut(&remote_node_id)?.add_packet(NodePacket::RequestPings(num_peers), outgoing)?;
+			},
+			NodeAction::TryNotifyPeer(remote_node_id) => {
+				if let Some(rank) = self.node_list.iter().take(TARGET_PEER_COUNT).position(|(_,&id)|id == remote_node_id) {
+					self.remote(&remote_node_id)?.add_packet(NodePacket::PeerNotify(rank), outgoing)?;
 				}
 			},
 			NodeAction::Packet(remote_node_id, packet) => {
 				// Send packet to remote
 				self.remote(&remote_node_id)?.add_packet(packet, outgoing)?;
 			},
-			NodeAction::RequestPeers(remote_node_id, num_peers) => {
-				self.remote_mut(&remote_node_id)?.add_packet(NodePacket::RequestPings(num_peers), outgoing)?;
-			}
 			NodeAction::Bootstrap(remote_node_id, net_id) => {
 				// Initiate secure connection
 				self.action(NodeAction::Connect(remote_node_id, net_id));
 				// Test Direct connection
 				self.action(NodeAction::TestNode(remote_node_id, 1000).gen_condition(NodeActionCondition::Session(remote_node_id)));
 				// Ask for Pings
-				self.action(NodeAction::RequestPeers(remote_node_id, TARGET_DIRECT_NODES/2).gen_condition(NodeActionCondition::PeerTested(remote_node_id)));
+				// self.action(NodeAction::RequestPeers(remote_node_id, TARGET_PEER_COUNT/2).gen_condition(NodeActionCondition::PeerTested(remote_node_id)));
 			},
 			// NodeAction::Route(_remote_node_id, _remote_route_coord ) => {},
 			// Embedded action is run in main loop
@@ -313,6 +341,7 @@ impl Node {
 						NodePacket::Ping(ping_id) => {
 							// Return ping
 							self.remote(&return_node_id)?.add_packet(NodePacket::PingResponse(ping_id), outgoing)?;
+							
 						},
 						NodePacket::PingResponse(ping_id) => {
 							// Acknowledge ping
@@ -320,20 +349,21 @@ impl Node {
 							session.tracker.acknowledge_ping(ping_id, current_time)?;
 						},
 						NodePacket::RequestPings(requests) => {
+
 							if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
 							// Loop through first min(N,MAX_REQUEST_PINGS) items of priorityqueue
 							let num_requests = usize::min(requests, MAX_REQUEST_PINGS); // Maximum of 10 requests
 
 							let want_ping_packet = NodePacket::WantPing(return_node_id, self.remote(&return_node_id)?.session()?.return_net_id);
-							for (session_id, _) in self.node_list.iter().take(num_requests) {
-								let node_id = self.sessions.get(session_id).ok_or(PacketParseError::UnknownSession { session_id: *session_id })?;
-								let remote = self.remote(node_id)?;
+							for (_, node_id) in self.node_list.iter().take(num_requests) {
 								// Generate packet sent to nearby remotes that this node wants to be pinged (excluding requester)
+								let remote = self.remote(node_id)?;
 								if remote.node_id != return_node_id {
 									remote.add_packet(want_ping_packet.clone(), outgoing)?;
 								}
 							}
-							// TODO: Find nodes that might be close to requester and ask them to ping requester
+
+							self.action(NodeAction::MaybeTestNode(return_node_id));
 						},
 						// Initiate Direct Handshakes with people who want pings
 						NodePacket::WantPing(requesting_node_id, requesting_net_id) => {
