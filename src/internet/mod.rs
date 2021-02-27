@@ -85,12 +85,17 @@ impl<CN: CustomNode> InternetSim<CN> {
 
 		for (net_id, node) in &self.nodes {
 			let node = node.as_any().downcast_ref::<crate::node::Node>().unwrap();
-			let node_coord = convert_coords(self.router.speed_map[net_id].position);
-			for (session_id, _) in &node.node_list {
-				let remote_net_id = node.remote(&node.sessions[session_id])?.session()?.return_net_id;
-				let remote_coord = convert_coords(self.router.speed_map[&remote_net_id].position);
-				
-				root.draw(&PathElement::new([node_coord, remote_coord], ShapeStyle::from(&BLACK)))?;
+			println!("Drawing Node Connections: {:?}", node.node_list);
+			if node.node_list.len() > 0 {
+				let node_coord = convert_coords(self.router.speed_map.get(net_id).ok_or("failed to index speed map")?.position);
+				for (index, (_, node_id)) in node.node_list.iter().enumerate() {
+					let remote_session = node.remote(node_id)?.session()?;
+					let remote_net_id = remote_session.return_net_id;
+					let remote_coord = convert_coords(self.router.speed_map[&remote_net_id].position);
+					let color = if index <= 5 { &BLACK } else { &RGBColor(200, 200, 200) };
+	
+					root.draw(&PathElement::new([node_coord, remote_coord], ShapeStyle::from(color)))?;
+				}
 			}
 		}
 
