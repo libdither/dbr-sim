@@ -26,14 +26,15 @@ fn main() {
 		.with_action(NodeAction::Bootstrap(0, 0));
 	internet.add_node(node1);
 
-	for i in 2..4 {
+	for i in 2..15 {
 		let node2 = Node::new(i, internet.lease())
-		.with_action(NodeAction::Bootstrap(0, 0)); //.gen_condition(NodeActionCondition::RunAt(3000)));
+			.with_action(NodeAction::Bootstrap(0, 0));
 		internet.add_node(node2);
+		internet.run(3000);
 	}
 	
 
-	internet.run(30000);
+	parse_command(&mut internet, &vec![&"graph"]);
 
 
 	let stdin = io::stdin();

@@ -4,6 +4,7 @@ mod router;
 use router::InternetRouter;
 
 use std::collections::HashMap;
+use std::any::Any;
 
 use plotters::prelude::*;
 use plotters::coord::types::RangedCoordf32;
@@ -22,6 +23,7 @@ pub trait CustomNode: std::fmt::Debug {
 	fn net_id(&self) -> InternetID;
 	fn tick(&mut self, incoming: Vec<InternetPacket>) -> Vec<InternetPacket>;
 	fn action(&mut self, action: Self::CustomNodeAction);
+	fn as_any(&self) -> &dyn Any;
 }
 
 #[derive(Debug)]
@@ -69,17 +71,31 @@ impl<CN: CustomNode> InternetSim<CN> {
 
 		let dot_and_label = |x: f32, y: f32, label: &str| {
 			return EmptyElement::at((x, y))
-				+ Circle::new((0, 0), 3, ShapeStyle::from(&BLACK).filled())
+				+ Circle::new((0, 0), 10, ShapeStyle::from(&BLACK).stroke_width(3))
 				+ Text::new(
 					format!("{}", label),
-					(10, 0),
+					(-3, -3),
 					("sans-serif", 15.0).into_font(),
 				);
 		};
 
-		for (id, lc) in self.router.speed_map.iter() {
-			let (x, y) = (lc.position.0 as f32 / router::AREA as f32, lc.position.1 as f32 / router::AREA as f32);
-			root.draw(&dot_and_label(x, y, &id.to_string()))?;
+		let convert_coords = |position: (i32, i32)| {
+			(position.0 as f32 / (router::AREA / 2) as f32, position.1 as f32 / (router::AREA / 2) as f32)
+		};
+
+		for (net_id, node) in &self.nodes {
+			let node = node.as_any().downcast_ref::<crate::node::Node>().unwrap();
+			let node_coord = convert_coords(self.router.speed_map[net_id].position);
+			for (session_id, _) in &node.peered_nodes {
+				let remote_net_id = node.remote(&node.sessions[session_id])?.session()?.return_net_id;
+				let remote_coord = convert_coords(self.router.speed_map[&remote_net_id].position);
+				root.draw(&PathElement::new([node_coord, remote_coord], ShapeStyle::from(&BLACK)))?;
+			}
+		}
+		
+		for (net_id, lc) in self.router.speed_map.iter() {
+			let (x, y) = convert_coords(lc.position);
+			root.draw(&dot_and_label(x, y, &net_id.to_string()))?;
 		}
 		Ok(())
 	}

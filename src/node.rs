@@ -7,6 +7,7 @@ const MAX_REQUEST_PINGS: usize = 10;
 
 use std::collections::HashMap;
 use std::cmp::Reverse;
+use std::any::Any;
 
 use priority_queue::PriorityQueue;
 
@@ -51,7 +52,6 @@ impl NodeActionCondition {
 			NodeActionCondition::PeerTested(node_id) => {
 				let remote = node.remote_mut(&node_id)?;
 				if remote.session_active() {
-					println!("Active");
 					remote.session_mut()?.tracker.is_viable().is_none().then(||self)
 				} else { false.then(||self) }
 			},
@@ -147,6 +147,7 @@ impl CustomNode for Node {
 	fn action(&mut self, action: NodeAction) {
 		self.actions_queue.push(action);
 	}
+	fn as_any(&self) -> &dyn Any { self }
 }
 #[derive(Error, Debug)]
 pub enum PacketParseError {
