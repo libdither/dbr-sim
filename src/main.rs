@@ -18,7 +18,7 @@ use node::{Node, NodeAction, NodeID, NodeActionCondition};
 fn main() {
 	env_logger::init();
 	println!("Hello, Network!");
-	std::fs::create_dir_all("target/images");
+	let _ = std::fs::create_dir_all("target/images");
 
 	let mut internet = InternetSim::new();
 	let node = Node::new(0, internet.lease());

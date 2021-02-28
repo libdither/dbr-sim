@@ -1,6 +1,6 @@
 #[allow(dead_code)]
 
-const TARGET_PEER_COUNT: usize = 5;
+const TARGET_PEER_COUNT: usize = 3;
 // Amount of time to wait to connect to a peer who wants to ping
 const WANT_PING_CONN_TIMEOUT: usize = 300;
 const MAX_REQUEST_PINGS: usize = 10;
@@ -232,15 +232,12 @@ impl Node {
 				}
 			},
 			NodeAction::MaybeTestNode(remote_node_id) => {
-				// If need more nodes
-				if self.node_list.len() < TARGET_PEER_COUNT {
-					// If have active session
-					if let Ok(session) = self.remote(&remote_node_id)?.session() {
-						// If node is not currently being tested, and this node is not already tested
-						if !session.is_testing && self.node_list.iter().find(|(_, &id)|id==remote_node_id).is_none() {
-							// Test the node!
-							self.action(NodeAction::TestNode(remote_node_id, 3000));
-						}
+				// If have active session
+				if let Ok(session) = self.remote(&remote_node_id)?.session() {
+					// If node is not currently being tested, and this node is not already tested
+					if !session.is_testing && self.node_list.iter().find(|(_, &id)|id==remote_node_id).is_none() {
+						// Test the node!
+						self.action(NodeAction::TestNode(remote_node_id, 3000));
 					}
 				}
 				
@@ -381,12 +378,7 @@ impl Node {
 						},
 						NodePacket::AcceptWantPing(_intermediate_node_id) => {
 							if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
-							let session = self.remote_mut(&return_node_id)?.session_mut()?;
-							if let SessionType::Normal = session.session_type {
-								if Some(true) != session.test_direct() {
-									self.action(NodeAction::TestNode(return_node_id, 1000));
-								}
-							}
+							self.action(NodeAction::MaybeTestNode(return_node_id));
 						},
 						// Receive notification that another node has found me it's closest
 						NodePacket::PeerNotify(rank) => {
