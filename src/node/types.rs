@@ -16,6 +16,9 @@ pub type RouteCoord = (RouteScalar, RouteScalar);
 /// Packets that are sent between nodes in this protocol.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum NodePacket {
+	/// Send immediately after receiving a an Acknowledgement, allows other node to get a rough idea about the node's latency
+	/// Contains list of packets for remote to respond to 
+	ConnectionInit(PingID, Vec<NodePacket>),
 	/// Sent to other Nodes. Expects PingResponse returned
 	Ping(PingID), // Random number uniquely identifying this ping request
 	/// PingResponse packet, time between Ping and PingResponse is measured
@@ -76,8 +79,8 @@ pub enum RemoteNodeError {
 #[derive(Debug)]
 pub struct RemoteNode {
 	pub node_id: NodeID, // The ID of the remote node
-	handshake_pending: Option<(usize, SessionID)>, // is Some(current_time, session_id) if handshake request is pending acknowledgement
-	session: Option<RemoteSession>, // Session object, is None if no connection is active
+	pub handshake_pending: Option<(SessionID, usize, Vec<NodePacket>)>, // is Some(pending_session_id, time_sent_handshake, packets_to_send)
+	pub session: Option<RemoteSession>, // Session object, is None if no connection is active
 }
 impl RemoteNode {
 	pub fn new(node_id: NodeID) -> Self {
@@ -96,37 +99,6 @@ impl RemoteNode {
 	pub fn session_mut(&mut self) -> Result<&mut RemoteSession, RemoteNodeError> {
 		self.session.as_mut().ok_or( RemoteNodeError::NoSessionError { node_id: self.node_id } )
 	}
-	/// This function creates a NodeEncryption::Handshake object to be sent to a peer that secure communication should be established with
-	pub fn gen_handshake(&mut self, my_node_id: NodeID, current_time: usize) -> NodeEncryption {
-		// Generate Handshake to send out
-		let session_id: SessionID = rand::random();
-		self.handshake_pending = Some((current_time, session_id));
-		NodeEncryption::Handshake { recipient: self.node_id, session_id, signer: my_node_id, time_sent: current_time }
-	}
-	/// Make note of handshake, create session & send back acknowledgement
-	pub fn gen_acknowledgement(&mut self, recipient: NodeID, session_id: SessionID, time_generated: usize, my_node_id: NodeID, return_net_id: InternetID) -> Result<NodeEncryption, RemoteNodeError> {
-		if recipient != my_node_id { return Err(RemoteNodeError::UnknownAckRecipient { recipient }) }
-		// Check if already sent a handshake
-		if let Some((own_time_sent, _)) = self.handshake_pending {
-			// If I sent it first, return and wait for Acknowledgement
-			if time_generated > own_time_sent { return Err(RemoteNodeError::SimultaneousHandshake) }
-		}
-		// Otherwise gen acknowledgement and session
-		self.session = Some(RemoteSession::from_id(session_id, return_net_id));
-		Ok(NodeEncryption::Acknowledge { session_id, acknowledger: recipient })
-	}
-	/// Receive Acknowledgement of previously sent handshake and enable RemoteSession if Acknowledgement was requested
-	pub fn validate_session(&mut self, session_id: SessionID, return_net_id: InternetID) -> Result<(), RemoteNodeError> {
-		// Check if there is actually a handshake pending
-		if let Some((_, sent_session_id)) = self.handshake_pending {
-			// Check if right acknowledgement was received
-			if sent_session_id == session_id {
-				self.handshake_pending = None;
-				self.session = Some(RemoteSession::from_id(session_id, return_net_id));
-				Ok(())
-			} else { Err( RemoteNodeError::UnknownAck { passed: session_id } ) }
-		} else { Err(RemoteNodeError::NoPendingHandshake) }
-	}
 	/// Wrap packet and push to `outgoing` Vec
 	pub fn add_packet(&self, packet: NodePacket, outgoing: &mut Vec<InternetPacket>) -> Result<(), RemoteNodeError> {
 		Ok(outgoing.push(self.session()?.gen_packet(packet)?))
@@ -136,17 +108,17 @@ impl RemoteNode {
 #[derive(Serialize, Deserialize, Debug)]
 pub enum NodeEncryption {
 	/// Handshake is sent from node wanting to establish secure tunnel to another node
-	Handshake { recipient: NodeID, session_id: SessionID, signer: NodeID, time_sent: usize },
+	Handshake { recipient: NodeID, session_id: SessionID, signer: NodeID },
 	/// When the other node receives the Handshake, they will send back an Acknowledge
 	/// When the original party receives the Acknowledge, that tunnel may now be used 
-	Acknowledge { session_id: SessionID, acknowledger: NodeID },
+	Acknowledge { session_id: SessionID, acknowledger: NodeID, return_ping_id: PingID },
 	Session { session_id: SessionID, packet: NodePacket },
 }
 
 impl NodeEncryption {
-	pub fn package(&self, src_addr: InternetID, dest_addr: InternetID) -> InternetPacket {
+	pub fn package(&self, dest_addr: InternetID) -> InternetPacket {
 		InternetPacket {
-			src_addr,
+			src_addr: 0, // This should get filled in automatically for all outgoing packets
 			data: serde_json::to_vec(&self).expect("Failed to encode json"),
 			dest_addr,
 		}

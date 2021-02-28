@@ -22,18 +22,18 @@ fn main() {
 
 	let mut internet = InternetSim::new();
 
-	for i in 0..20 {
+	for i in 0..2 {
 		let node2 = Node::new(i, internet.lease());
 		internet.add_node(node2);
 	}
 
-	for i in 1..(internet.nodes.len()+2) {
+	for i in 1..(internet.nodes.len()+0) {
 		if let Some(node) = internet.node_mut(i) {
 			node.action(NodeAction::Bootstrap(0,0));
 		} else { log::error!("Node at InternetID({}) doesn't exist", i)}
 		for j in 0..30 {
 			internet.run(100);
-			internet.gen_routing_plot(&format!("target/images/{:0>6}.png", (i-1)*30+j), (500, 500)).expect("Failed to output image");
+			//internet.gen_routing_plot(&format!("target/images/{:0>6}.png", (i-1)*30+j), (500, 500)).expect("Failed to output image");
 		}
 	}
 	//internet.gen_routing_plot(&format!("target/images/{:0>6}.png", i/100), (500, 500)).expect("Failed to output image");
@@ -112,7 +112,7 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
 						if let Some(Ok(remote_net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
 							println!("Connecting NodeID({:?}) to NodeID({:?}), InternetID({:?}))", node.node_id, remote_node_id, remote_net_id);
-							node.action(NodeAction::Connect(remote_node_id, remote_net_id));
+							node.action(NodeAction::Connect(remote_node_id, remote_net_id, vec![]));
 						} else { Err("node: connect: requires InternetID to bootstrap off of")? }
 					} else { Err("node: connect: requires a NodeID to establish secure connection")? }
 				},

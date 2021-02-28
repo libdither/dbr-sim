@@ -66,7 +66,7 @@ impl SessionTracker {
 	/// Returns Some if the connection has been tested enough
 	/// Returns Some(true) if it is a viable connection
 	pub fn is_viable(&self) -> Option<bool> {
-		if self.ping_count >= 2 {
+		if self.ping_count >= 1 {
 			Some(self.dist_dev < 1)
 		} else { None }
 	}
@@ -170,7 +170,7 @@ impl RemoteSession {
 	pub fn gen_packet(&self, packet: NodePacket) -> Result<InternetPacket, SessionError> {
 		match &self.session_type {
 			SessionType::Normal | SessionType::Peer(_) | SessionType::IncomingPeer(_) => {
-				Ok(packet.encrypt(self.session_id).package(0, self.return_net_id))
+				Ok(packet.encrypt(self.session_id).package(self.return_net_id))
 			},
 			_ => todo!(),
 		}

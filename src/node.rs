@@ -1,6 +1,6 @@
 #[allow(dead_code)]
 
-const TARGET_PEER_COUNT: usize = 3;
+const TARGET_PEER_COUNT: usize = 5;
 // Amount of time to wait to connect to a peer who wants to ping
 // const WANT_PING_CONN_TIMEOUT: usize = 300;
 const MAX_REQUEST_PINGS: usize = 10;
@@ -16,7 +16,7 @@ pub use crate::internet::{CustomNode, InternetID, InternetPacket};
 mod types;
 mod session;
 pub use types::{NodeID, SessionID, RouteCoord, NodePacket, NodeEncryption, RemoteNode, RemoteNodeError, RouteScalar};
-use session::SessionError;
+use session::{SessionError, RemoteSession};
 
 #[derive(Debug, Clone)]
 /// A condition that should be satisfied before an action is executed
@@ -63,8 +63,8 @@ impl NodeActionCondition {
 }
 #[derive(Debug, Clone)]
 pub enum NodeAction {
-	/// Initiate Handshake with remote NodeID, InternetID
-	Connect(NodeID, InternetID),
+	/// Initiate Handshake with remote NodeID, InternetID and initial packets
+	Connect(NodeID, InternetID, Vec<NodePacket>),
 	/// Ping a node
 	Ping(NodeID, usize), // Ping node X number of times
 	/// Continually Ping remote until connection is deamed viable or unviable
@@ -117,8 +117,14 @@ impl CustomNode for Node {
 		for packet in incoming {
 			//let mut noise = builder.local_private_key(self.keypair.)
 			let (src_addr, dest_addr) = (packet.src_addr, packet.dest_addr);
-			if let Err(err) = self.parse_packet(packet, &mut outgoing) {
-				log::error!("Error in parsing packet from InternetID({}) to InternetID({}): {:?}", src_addr, dest_addr, err);
+			match self.parse_packet(packet, &mut outgoing) {
+				Ok(Some((return_node_id, node_packet))) => {
+					if let Err(err) = self.parse_node_packet(return_node_id, node_packet, &mut outgoing) {
+						log::error!("Error in parsing NodePacket from NodeID({}) to NodeID({}): {:?}", return_node_id, self.node_id, err);
+					}
+				},
+				Ok(None) => {},
+				Err(err) => log::error!("Error in parsing InternetPacket from InternetID({}) to InternetID({}): {:?}", src_addr, dest_addr, err),
 			}
 		}
 		
@@ -148,9 +154,9 @@ impl CustomNode for Node {
 	fn as_any(&self) -> &dyn Any { self }
 }
 #[derive(Error, Debug)]
-pub enum PacketParseError {
-	#[error("Node Error")]
-	NodeError(#[from] NodeError),
+pub enum NodeError {
+    #[error("There is no known remote: {node_id:?}")]
+	NoRemoteError { node_id: NodeID },
     #[error("There is no known session: {session_id:?}")]
 	UnknownSession { session_id: SessionID },
 	#[error("InternetPacket from {from:?} was addressed to {intended_dest:?}, not me")]
@@ -179,19 +185,12 @@ pub enum ActionError {
 	#[error("NodeActionCondition Error")]
 	NodeActionConditionError(#[from] NodeActionConditionError),
 }
-#[derive(Error, Debug)]
-pub enum NodeError {
-    #[error("There is no known remote: {node_id:?}")]
-	NoRemoteError { node_id: NodeID },
-}
+
 
 impl Node {
 	pub fn new(node_id: NodeID, net_id: InternetID) -> Node {
-		//let keypair = Keypair::generate_ed25519();
-		//let node_id = key.public().into_peer_id();
 		Node {
 			node_id,
-			//keypair,
 			net_id,
 
 			route_coord: Default::default(),
@@ -213,14 +212,9 @@ impl Node {
 	pub fn parse_action(&mut self, action: &NodeAction, outgoing: &mut Vec<InternetPacket>) -> Result<bool, ActionError> {
 		match action.clone() {
 			// Connect to remote node
-			NodeAction::Connect(remote_node_id, remote_net_id) => {
+			NodeAction::Connect(remote_node_id, remote_net_id, packets) => {
 				// Insert RemoteNode if doesn't exist
-				let remote = self.remotes.entry(remote_node_id).or_insert(RemoteNode::new(remote_node_id));
-				// Run Handshake if no active session
-				if !remote.session_active() && remote_node_id != self.node_id {
-					let packet = remote.gen_handshake(self.node_id, self.ticks).package(self.net_id, remote_net_id);
-					outgoing.push(packet);
-				}
+				self.direct_connect(remote_node_id, remote_net_id, packets, outgoing);
 			},
 			NodeAction::Ping(remote_node_id, num_pings) => {
 				let self_ticks = self.ticks;
@@ -268,6 +262,12 @@ impl Node {
 							self.node_list.insert(distance, remote_node_id);
 							// If close, send peer request
 							if self.node_list.iter().take(TARGET_PEER_COUNT).find(|(_,&id)|id == remote_node_id).is_some() {
+								self.action(NodeAction::TryNotifyPeer(remote_node_id));
+								if let Some(node) = self.node_list.values().nth(TARGET_PEER_COUNT) {
+									if self.remote(node)?.session()?.is_peer() {
+										self.action(NodeAction::TryNotifyPeer(u32::MAX)); // Notify removal of old peers
+									}
+								}
 								self.action(NodeAction::RequestPeers(remote_node_id, TARGET_PEER_COUNT))
 							}
 						}
@@ -289,9 +289,9 @@ impl Node {
 			},
 			NodeAction::Bootstrap(remote_node_id, net_id) => {
 				// Initiate secure connection
-				self.action(NodeAction::Connect(remote_node_id, net_id));
+				self.action(NodeAction::Connect(remote_node_id, net_id, vec![]));
 				// Test Direct connection
-				self.action(NodeAction::TestNode(remote_node_id, 1000).gen_condition(NodeActionCondition::Session(remote_node_id)));
+				self.action(NodeAction::MaybeTestNode(remote_node_id).gen_condition(NodeActionCondition::Session(remote_node_id)));
 				// Ask for Pings
 				// self.action(NodeAction::RequestPeers(remote_node_id, TARGET_PEER_COUNT/2).gen_condition(NodeActionCondition::PeerTested(remote_node_id)));
 			},
@@ -304,98 +304,130 @@ impl Node {
 		}
 		Ok(true)
 	}
-	pub fn parse_packet(&mut self, received_packet: InternetPacket, outgoing: &mut Vec<InternetPacket>) -> Result<(), PacketParseError> {
-		if received_packet.dest_addr == self.net_id {
-			use NodeEncryption::*;
-			let encrypted = NodeEncryption::unpackage(&received_packet)?;
-			match encrypted {
-				Handshake { recipient, session_id, signer, time_sent } => {
-					log::debug!("[{: >4}] Node({:?}) Received Handshake: {:?}", self.ticks, self.node_id, encrypted);
-					// If receive a Handshake Request, acknowledge it
-					let my_node_id = self.node_id;
-					let remote = self.remotes.entry(signer).or_insert(RemoteNode::new(signer));
-					let acknowledge_packet = remote.gen_acknowledgement(recipient, session_id, time_sent, my_node_id, received_packet.src_addr)?;
-					self.sessions.insert(session_id, signer); // Register to SessionID index
-					outgoing.push(acknowledge_packet.package(self.net_id, received_packet.src_addr));
-				},
-				Acknowledge { session_id, acknowledger } => {
-					log::debug!("[{: >4}] Node({:?}) Received Acknowledgement: {:?}", self.ticks, self.node_id, encrypted);
-					// If receive an Acknowledge request, validate Handshake previously sent out
-					let remote = self.remote_mut(&acknowledger)?;
-					if let Err(err) = remote.validate_session(session_id, received_packet.src_addr) {
-						if let RemoteNodeError::SimultaneousHandshake = err {  } else { Err(err)? }
-					}
-					self.sessions.insert(session_id, acknowledger); // Register to SessionID index
-				},
-				Session { session_id, packet: node_packet } => {
-					let return_node_id = *self.sessions.get(&session_id).ok_or(PacketParseError::UnknownSession { session_id })?;
-					let current_time = self.ticks;
-					let packet_last_received  = self.remote_mut(&return_node_id)?.session_mut()?.check_packet_time(&node_packet, return_node_id, current_time);
-					
-					log::debug!("[{: >4}] Node({}) received NodePacket::{:?} from NodeID({}), InternetID({})", current_time, self.node_id, node_packet, return_node_id, received_packet.src_addr);
-					//let return_remote = self.remote_mut(&return_node_id)?;
-					match node_packet {
-						NodePacket::Ping(ping_id) => {
-							// Return ping
-							self.remote(&return_node_id)?.add_packet(NodePacket::PingResponse(ping_id), outgoing)?;
-							
-						},
-						NodePacket::PingResponse(ping_id) => {
-							// Acknowledge ping
-							let session = self.remote_mut(&return_node_id)?.session_mut()?;
-							session.tracker.acknowledge_ping(ping_id, current_time)?;
-						},
-						NodePacket::RequestPings(requests) => {
-
-							if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
-							// Loop through first min(N,MAX_REQUEST_PINGS) items of priorityqueue
-							let num_requests = usize::min(requests, MAX_REQUEST_PINGS); // Maximum of 10 requests
-
-							let want_ping_packet = NodePacket::WantPing(return_node_id, self.remote(&return_node_id)?.session()?.return_net_id);
-							for (_, node_id) in self.node_list.iter().take(num_requests) {
-								// Generate packet sent to nearby remotes that this node wants to be pinged (excluding requester)
-								let remote = self.remote(node_id)?;
-								if remote.node_id != return_node_id {
-									remote.add_packet(want_ping_packet.clone(), outgoing)?;
-								}
-							}
-
-							self.action(NodeAction::MaybeTestNode(return_node_id));
-						},
-						// Initiate Direct Handshakes with people who want pings
-						NodePacket::WantPing(requesting_node_id, requesting_net_id) => {
-							if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
-							if self.node_id != requesting_node_id {
-								// Connect to requested node
-								self.action(NodeAction::Connect(requesting_node_id, requesting_net_id));
-								// Attempt to send AcceptWantPing Packet after a certain number of ticks after initial connection request
-								// This is to prevent connections with far away nodes
-								let packet_action = NodeAction::Packet(requesting_node_id, NodePacket::AcceptWantPing(return_node_id))
-									.gen_condition(NodeActionCondition::Session(requesting_node_id));
-								self.action(packet_action);
-							} else { log::warn!("Node({}) received own WantPing", self.node_id) }
-							
-						},
-						NodePacket::AcceptWantPing(_intermediate_node_id) => {
-							if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
-							self.action(NodeAction::MaybeTestNode(return_node_id));
-						},
-						// Receive notification that another node has found me it's closest
-						NodePacket::PeerNotify(rank) => {
-							// Record peer rank
-							let session = self.remote_mut(&return_node_id)?.session_mut()?;
-							session.record_peer_notify(rank);
-						}
-						/*NodePacket::Traverse(target_route_coord, encrypted_data) => {
-							// outgoing.push(value)
-						},*/
-						_ => { },
-					}
+	pub fn parse_node_packet(&mut self, return_node_id: NodeID, received_packet: NodePacket, outgoing: &mut Vec<InternetPacket>) -> Result<(), NodeError> {
+		log::debug!("[{: >4}] Node({}) received NodePacket::{:?} from NodeID({})", self.ticks, self.node_id, received_packet, return_node_id);
+		//let return_remote = self.remote_mut(&return_node_id)?;
+		let self_ticks = self.ticks;
+		let packet_last_received  = self.remote_mut(&return_node_id)?.session_mut()?.check_packet_time(&received_packet, return_node_id, self_ticks);
+		match received_packet {
+			NodePacket::ConnectionInit(ping_id, packets) => {
+				// Acknowledge ping
+				self.remote_mut(&return_node_id)?.session_mut()?.tracker.acknowledge_ping(ping_id, self_ticks)?;
+				// Parse embedded packets
+				for packet in packets {
+					self.parse_node_packet(return_node_id, packet, outgoing)?;
 				}
 			}
-		} else {
-			return Err( PacketParseError::InvalidNetworkRecipient { from: received_packet.src_addr, intended_dest: received_packet.dest_addr } )
+			NodePacket::Ping(ping_id) => {
+				// Return ping
+				self.remote(&return_node_id)?.add_packet(NodePacket::PingResponse(ping_id), outgoing)?;
+				
+			},
+			NodePacket::PingResponse(ping_id) => {
+				// Acknowledge ping
+				let session = self.remote_mut(&return_node_id)?.session_mut()?;
+				session.tracker.acknowledge_ping(ping_id, self_ticks)?;
+			},
+			NodePacket::RequestPings(requests) => {
+
+				if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
+				// Loop through first min(N,MAX_REQUEST_PINGS) items of priorityqueue
+				let num_requests = usize::min(requests, MAX_REQUEST_PINGS); // Maximum of 10 requests
+
+				let want_ping_packet = NodePacket::WantPing(return_node_id, self.remote(&return_node_id)?.session()?.return_net_id);
+				for (_, node_id) in self.node_list.iter().take(num_requests) {
+					// Generate packet sent to nearby remotes that this node wants to be pinged (excluding requester)
+					let remote = self.remote(node_id)?;
+					if remote.node_id != return_node_id {
+						remote.add_packet(want_ping_packet.clone(), outgoing)?;
+					}
+				}
+
+				self.action(NodeAction::MaybeTestNode(return_node_id));
+			},
+			// Initiate Direct Handshakes with people who want pings
+			NodePacket::WantPing(requesting_node_id, requesting_net_id) => {
+				if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
+				if self.node_id != requesting_node_id {
+					// Connect to requested node
+					self.action(NodeAction::Connect(requesting_node_id, requesting_net_id, vec![NodePacket::AcceptWantPing(return_node_id)]));
+				} else { log::warn!("Node({}) received own WantPing", self.node_id) }
+				
+			},
+			NodePacket::AcceptWantPing(_intermediate_node_id) => {
+				if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
+				self.action(NodeAction::MaybeTestNode(return_node_id));
+			},
+			// Receive notification that another node has found me it's closest
+			NodePacket::PeerNotify(rank) => {
+				// Record peer rank
+				let session = self.remote_mut(&return_node_id)?.session_mut()?;
+				session.record_peer_notify(rank);
+			}
+			/*NodePacket::Traverse(target_route_coord, encrypted_data) => {
+				// outgoing.push(value)
+			},*/
+			_ => { },
 		}
 		Ok(())
+	}
+
+	/// Initiate handshake process and send packets when completed
+	fn direct_connect(&mut self, dest_node_id: NodeID, dest_addr: InternetID, packets: Vec<NodePacket>, outgoing: &mut Vec<InternetPacket>) {
+		let session_id: SessionID = rand::random(); // Create random session ID
+		//let self_node_id = self.node_id;
+		let self_ticks = self.ticks;
+		let remote = self.remotes.entry(dest_node_id).or_insert(RemoteNode::new(dest_node_id));
+		remote.handshake_pending = Some((session_id, self_ticks, packets));
+		// TODO: public key encryption
+		let encryption = NodeEncryption::Handshake { recipient: dest_node_id, session_id, signer: self.node_id };
+		outgoing.push(encryption.package(dest_addr))
+	}
+	/// Parses handshakes, acknowledgments and sessions, Returns Some(remote_net_id, packet_to_parse) if session or handshake finished
+	fn parse_packet(&mut self, received_packet: InternetPacket, outgoing: &mut Vec<InternetPacket>) -> Result<Option<(NodeID, NodePacket)>, NodeError> {
+		if received_packet.dest_addr != self.net_id { return Err(NodeError::InvalidNetworkRecipient { from: received_packet.src_addr, intended_dest: received_packet.dest_addr }) }
+
+		let return_net_id = received_packet.src_addr;
+		let encrypted = NodeEncryption::unpackage(&received_packet)?;
+		let self_ticks = self.ticks;
+		let self_node_id = self.node_id;
+		Ok(match encrypted {
+			NodeEncryption::Handshake { recipient, session_id, signer } => {
+				if recipient != self.node_id { Err(RemoteNodeError::UnknownAckRecipient { recipient })?; }
+				let remote = self.remotes.entry(signer).or_insert(RemoteNode::new(signer));
+				if remote.handshake_pending.is_some() {
+					if self_node_id < remote.node_id { remote.handshake_pending = None }
+				}
+				let mut session = RemoteSession::from_id(session_id, return_net_id);
+				let return_ping_id = session.tracker.gen_ping(self_ticks);
+				remote.session = Some(session);
+				outgoing.push(NodeEncryption::Acknowledge { session_id, acknowledger: recipient, return_ping_id }.package(return_net_id));
+				self.sessions.insert(session_id, signer);
+				log::debug!("[{: >4}] Node({:?}) Received Handshake: {:?}", self_ticks, self_node_id, encrypted);
+				None
+			},
+			NodeEncryption::Acknowledge { session_id, acknowledger, return_ping_id } => {
+				let mut remote = self.remote_mut(&acknowledger)?;
+				if let Some((pending_session_id, time_sent_handshake, packets_to_send)) = remote.handshake_pending.take() {
+					if pending_session_id == session_id {
+						remote.handshake_pending = None;
+						let mut session = RemoteSession::from_id(session_id, return_net_id);
+						// Note ping
+						let ping_id = session.tracker.gen_ping(time_sent_handshake);
+						session.tracker.acknowledge_ping(ping_id, self_ticks)?;
+						remote.session = Some(session);
+						// Send return packets
+						remote.add_packet(NodePacket::ConnectionInit(return_ping_id, packets_to_send), outgoing)?;
+						self.sessions.insert(session_id, acknowledger);
+						log::debug!("[{: >4}] Node({:?}) Received Acknowledgement: {:?}", self_ticks, self_node_id, encrypted);
+						None
+					} else { Err( RemoteNodeError::UnknownAck { passed: session_id } )? }
+				} else { Err(RemoteNodeError::NoPendingHandshake)? }
+			},
+			NodeEncryption::Session { session_id, packet } => {
+				let return_node_id = self.sessions.get(&session_id).ok_or(NodeError::UnknownSession {session_id} )?;
+				Some((*return_node_id, packet))
+			},
+		})
 	}
 }
