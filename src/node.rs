@@ -2,7 +2,7 @@
 
 const TARGET_PEER_COUNT: usize = 3;
 // Amount of time to wait to connect to a peer who wants to ping
-const WANT_PING_CONN_TIMEOUT: usize = 300;
+// const WANT_PING_CONN_TIMEOUT: usize = 300;
 const MAX_REQUEST_PINGS: usize = 10;
 
 use std::collections::{HashMap, BTreeMap};
@@ -16,7 +16,7 @@ pub use crate::internet::{CustomNode, InternetID, InternetPacket};
 mod types;
 mod session;
 pub use types::{NodeID, SessionID, RouteCoord, NodePacket, NodeEncryption, RemoteNode, RemoteNodeError, RouteScalar};
-use session::{SessionError, SessionType};
+use session::SessionError;
 
 #[derive(Debug, Clone)]
 /// A condition that should be satisfied before an action is executed
@@ -217,7 +217,7 @@ impl Node {
 				// Insert RemoteNode if doesn't exist
 				let remote = self.remotes.entry(remote_node_id).or_insert(RemoteNode::new(remote_node_id));
 				// Run Handshake if no active session
-				if !remote.session_active() {
+				if !remote.session_active() && remote_node_id != self.node_id {
 					let packet = remote.gen_handshake(self.node_id, self.ticks).package(self.net_id, remote_net_id);
 					outgoing.push(packet);
 				}
@@ -371,7 +371,7 @@ impl Node {
 								// Attempt to send AcceptWantPing Packet after a certain number of ticks after initial connection request
 								// This is to prevent connections with far away nodes
 								let packet_action = NodeAction::Packet(requesting_node_id, NodePacket::AcceptWantPing(return_node_id))
-									.gen_condition(NodeActionCondition::RunAt(current_time + WANT_PING_CONN_TIMEOUT));
+									.gen_condition(NodeActionCondition::Session(requesting_node_id));
 								self.action(packet_action);
 							} else { log::warn!("Node({}) received own WantPing", self.node_id) }
 							

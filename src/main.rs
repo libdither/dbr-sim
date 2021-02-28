@@ -21,21 +21,20 @@ fn main() {
 	let _ = std::fs::create_dir_all("target/images");
 
 	let mut internet = InternetSim::new();
-	let node = Node::new(0, internet.lease());
-	internet.add_node(node);
 
-	for i in 1..10 {
+	for i in 0..20 {
 		let node2 = Node::new(i, internet.lease());
 		internet.add_node(node2);
 	}
-	internet.nodes.iter().for_each(|(id,node)|println!("{}:	{:?}", id, node));
 
-	for i in 0..internet.nodes.len() {
+	for i in 1..(internet.nodes.len()+2) {
 		if let Some(node) = internet.node_mut(i) {
 			node.action(NodeAction::Bootstrap(0,0));
 		} else { log::error!("Node at InternetID({}) doesn't exist", i)}
-		internet.run(3000);
-		internet.gen_routing_plot(&format!("target/images/{:0>6}.png", i), (500, 500)).expect("Failed to output image");
+		for j in 0..30 {
+			internet.run(100);
+			internet.gen_routing_plot(&format!("target/images/{:0>6}.png", (i-1)*30+j), (500, 500)).expect("Failed to output image");
+		}
 	}
 	//internet.gen_routing_plot(&format!("target/images/{:0>6}.png", i/100), (500, 500)).expect("Failed to output image");
 

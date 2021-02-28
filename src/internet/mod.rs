@@ -62,8 +62,8 @@ impl<CN: CustomNode> InternetSim<CN> {
 	pub fn gen_routing_plot(&self, path: &str, dimensions: (u32, u32)) -> Result<(), Box<dyn std::error::Error>> {
 		let root = BitMapBackend::new(path, dimensions).into_drawing_area();
 
-		root.fill(&RGBColor(240, 200, 200))?;
-		
+		root.fill(&RGBColor(200,200,200))?;
+
 		let root = root.apply_coord_spec(Cartesian2d::<RangedCoordf32, RangedCoordf32>::new(
 			-1f32..1f32,
 			-1f32..1f32,
@@ -86,7 +86,6 @@ impl<CN: CustomNode> InternetSim<CN> {
 
 		for (net_id, node) in &self.nodes {
 			let node = node.as_any().downcast_ref::<crate::node::Node>().unwrap();
-			println!("Drawing Node Connections: {:?}", node.node_list);
 			if node.node_list.len() > 0 {
 				let node_coord = convert_coords(self.router.speed_map.get(net_id).ok_or("failed to index speed map")?.position);
 				for (index, (_, node_id)) in node.node_list.iter().enumerate() {
@@ -95,6 +94,7 @@ impl<CN: CustomNode> InternetSim<CN> {
 					let remote_coord = convert_coords(self.router.speed_map[&remote_net_id].position);
 					let color = if index < 3 { &BLACK } else { &RGBColor(255, 255, 255) };
 					
+					// offset connections so both directions show side by side
 					let offset = (nalgebra::Rotation2::new(std::f32::consts::FRAC_PI_2) * (node_coord - remote_coord)).normalize();
 					let offset_node_coord = node_coord + (offset * 0.01);
 					let offset_remote_coord = remote_coord + (offset * 0.01);
