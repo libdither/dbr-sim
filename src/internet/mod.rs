@@ -8,6 +8,7 @@ use std::any::Any;
 
 use plotters::prelude::*;
 use plotters::coord::types::RangedCoordf32;
+use nalgebra::Vector2;
 
 pub type InternetID = usize;
 
@@ -80,7 +81,7 @@ impl<CN: CustomNode> InternetSim<CN> {
 		};
 
 		let convert_coords = |position: (i32, i32)| {
-			(position.0 as f32 / (router::AREA / 2) as f32, position.1 as f32 / (router::AREA / 2) as f32)
+			Vector2::new(position.0 as f32 / (router::AREA / 2) as f32, position.1 as f32 / (router::AREA / 2) as f32)
 		};
 
 		for (net_id, node) in &self.nodes {
@@ -92,16 +93,19 @@ impl<CN: CustomNode> InternetSim<CN> {
 					let remote_session = node.remote(node_id)?.session()?;
 					let remote_net_id = remote_session.return_net_id;
 					let remote_coord = convert_coords(self.router.speed_map[&remote_net_id].position);
-					let color = if index <= 5 { &BLACK } else { &RGBColor(200, 200, 200) };
-	
-					root.draw(&PathElement::new([node_coord, remote_coord], ShapeStyle::from(color)))?;
+					let color = if index < 3 { &BLACK } else { &RGBColor(255, 255, 255) };
+					
+					let offset = (nalgebra::Rotation2::new(std::f32::consts::FRAC_PI_2) * (node_coord - remote_coord)).normalize();
+					let offset_node_coord = node_coord + (offset * 0.01);
+					let offset_remote_coord = remote_coord + (offset * 0.01);
+					root.draw(&PathElement::new([(offset_node_coord.x, offset_node_coord.y), (offset_remote_coord.x, offset_remote_coord.y)], ShapeStyle::from(color)))?;
 				}
 			}
 		}
 
 		for (net_id, lc) in self.router.speed_map.iter() {
-			let (x, y) = convert_coords(lc.position);
-			root.draw(&dot_and_label(x, y, &net_id.to_string()))?;
+			let vec = convert_coords(lc.position);
+			root.draw(&dot_and_label(vec.x, vec.y, &net_id.to_string()))?;
 		}
 		Ok(())
 	}
