@@ -102,16 +102,17 @@ pub struct Node {
 
 	pub remotes: HashMap<NodeID, RemoteNode>, // All remotes this node has ever connected to
 	pub sessions: HashMap<SessionID, NodeID>, // All sessions that have ever been initialized
-	pub node_list: BTreeMap<RouteScalar, NodeID>, // All nodes that have been tested, sorted by lowest value
-	pub route_map: DiGraphMap<NodeID, RouteScalar>, // Bi-directional graph of all locally known nodes and the estimated distances between them
+	pub node_list: BTreeMap<u64, NodeID>, // All nodes that have been tested, sorted by lowest value
+	pub route_map: DiGraphMap<NodeID, u64>, // Bi-directional graph of all locally known nodes and the estimated distances between them
 	// pub peered_nodes: PriorityQueue<SessionID, Reverse<RouteScalar>>, // Top subset of all 
 	pub actions_queue: Vec<NodeAction>, // Actions will wait here until NodeID session is established
 }
 impl CustomNode for Node {
 	type CustomNodeAction = NodeAction;
 	fn net_id(&self) -> InternetID { self.net_id }
-	fn tick(&mut self, incoming: Vec<InternetPacket>) -> Vec<InternetPacket> {
+	fn tick(&mut self, incoming: Vec<InternetPacket>, cheat_position: &Option<(i32, i32)>) -> Vec<InternetPacket> {
 		let mut outgoing: Vec<InternetPacket> = Vec::new();
+		self.route_coord = cheat_position.map(|c|(c.0 as i64, c.1 as i64));
 
 		// Parse Incoming Packets
 		for packet in incoming {
@@ -342,8 +343,8 @@ impl Node {
 				remote.route_coord = remote_route_coord; // Make note of routing coordinate if exists
 
 				let ping = remote.session()?.tracker.dist_avg;
-				if remote_peer_count <= 1 {
-					remote.add_packet(NodePacket::ProposeRouteCoords((0,0), (0,ping)), outgoing)?;
+				if remote_peer_count <= 1 && remote_route_coord.is_none() {
+					remote.add_packet(NodePacket::ProposeRouteCoords((0,0), (0,ping as i64)), outgoing)?;
 				} else {
 					remote.add_packet(NodePacket::RequestPings(TARGET_PEER_COUNT), outgoing)?;
 				}
@@ -384,10 +385,10 @@ impl Node {
 			// Initiate Direct Handshakes with people who want pings
 			NodePacket::WantPing(requesting_node_id, requesting_net_id) => {
 				if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
-				let distance_me_return = self.remote(&return_node_id)?.session()?.tracker.dist_avg;
-				if self.node_id != requesting_node_id {
+				let distance_self_to_return = self.remote(&return_node_id)?.session()?.tracker.dist_avg;
+				if self.node_id != requesting_node_id && self.route_coord.is_some() {
 					// Connect to requested node
-					self.action(NodeAction::Connect(requesting_node_id, requesting_net_id, vec![NodePacket::AcceptWantPing(return_node_id, distance_me_return)]));
+					self.action(NodeAction::Connect(requesting_node_id, requesting_net_id, vec![NodePacket::AcceptWantPing(return_node_id, distance_self_to_return)]));
 				} else { log::warn!("Node({}) received own WantPing", self.node_id); }
 			},
 			NodePacket::AcceptWantPing(intermediate_node_id, return_to_intermediate_distance) => {
@@ -482,4 +483,28 @@ impl Node {
 			_ => packet,
 		}).collect::<Vec<NodePacket>>())
 	}
+	/* fn calculate_route_coord(&mut self) -> Result<RouteCoord, NodeError> {
+		// TODO: Implement multidimensional scaling to calculate new route coordinates
+
+		// This is temporary, only uses two closest nodes
+		let first_node_id = *self.node_list.values().nth(0).ok_or(NodeError::NoDirectNodes)?;
+		let second_node_id = *self.node_list.values().nth(1).ok_or(NodeError::NoDirectNodes)?;
+		
+		let first_coord = self.remote(&first_node_id)?.route_coord.ok_or(NodeError::NoDirectNodes)?; // Checked earlier
+		let second_coord = self.remote(&second_node_id)?.route_coord.ok_or(NodeError::NoDirectNodes)?;
+		let first_second_len = self.route_map.edge_weight(first_node_id, second_node_id).ok_or(NodeError::NoDirectNodes)?;
+		let self_first_len = self.route_map.edge_weight(self.node_id, first_node_id).ok_or(NodeError::NoDirectNodes)?;
+		let self_second_len = self.route_map.edge_weight(self.node_id, second_node_id).ok_or(NodeError::NoDirectNodes)?;
+		
+		// Adapted from: https://math.stackexchange.com/a/1989113
+		//use std::u64::pow;
+		let new_route_coord_y = (first_second_len.pow(2) + self_first_len.pow(2) - self_second_len.pow(2)) / (2 * first_second_len);
+		let new_route_coord_x = f64::sqrt((self_first_len.pow(2) - new_route_coord_y.pow(2)) as f64) as u64;
+		let new_route_coord: RouteCoord = (new_route_coord_x, new_route_coord_y);
+		Ok(new_route_coord)
+	} */
+	/* fn get_third_point(first_point: RouteCoord, second_point: RouteCoord, first_second: RouteScalar, first_third: RouteScalar, second_third: RouteScalar) -> () {
+		let result = RouteCoord(0, 0);
+		result.x = (first_second.pow(2) + first_third.pow(2) - second_third.pow(2)) / (2 * first_second)
+	} */
 }

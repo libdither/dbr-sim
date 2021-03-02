@@ -22,7 +22,7 @@ pub struct InternetPacket {
 pub trait CustomNode: std::fmt::Debug {
 	type CustomNodeAction;
 	fn net_id(&self) -> InternetID;
-	fn tick(&mut self, incoming: Vec<InternetPacket>) -> Vec<InternetPacket>;
+	fn tick(&mut self, incoming: Vec<InternetPacket>, cheat_position: &Option<(i32, i32)>) -> Vec<InternetPacket>;
 	fn action(&mut self, action: Self::CustomNodeAction);
 	fn as_any(&self) -> &dyn Any;
 }
@@ -44,14 +44,18 @@ impl<CN: CustomNode> InternetSim<CN> {
 	pub fn del_node(&mut self, net_id: InternetID) { self.nodes.remove(&net_id); }
 	pub fn node_mut(&mut self, node_id: InternetID) -> Option<&mut CN> { self.nodes.get_mut(&node_id) }
 	pub fn node(&self, node_id: InternetID) -> Option<&CN> { self.nodes.get(&node_id) }
-	pub fn run(&mut self, ticks: usize) {
+	pub fn tick(&mut self, ticks: usize) {
 		//let packets_tmp = Vec::new();
 		for _ in 0..ticks {
 			for node in self.nodes.values_mut() {
 				// Get Packets going to node
 				let incoming_packets = self.router.tick_node(node.net_id());
 				// Get packets coming from node
-				let mut outgoing_packets = node.tick(incoming_packets);
+				// Tells each node what its exact position in the router is, to be replaced with Principal Coordinates Analysis & MDS
+				let cheat_position = &self.router.speed_map.get(&node.net_id()).map(|lc|lc.position);
+				//println!("{:?}: {:?}", node.net_id(), cheat_position);
+				let mut outgoing_packets = node.tick(incoming_packets, cheat_position);
+
 				// Make outgoing packets have the correct return address
 				for packet in &mut outgoing_packets { packet.src_addr = node.net_id(); }
 				// Send packets through the router

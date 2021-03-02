@@ -22,7 +22,7 @@ fn main() {
 
 	let mut internet = InternetSim::new();
 
-	for i in 0..4 {
+	for i in 0..20 {
 		let node2 = Node::new(i, internet.lease());
 		internet.add_node(node2);
 	}
@@ -32,7 +32,7 @@ fn main() {
 			node.action(NodeAction::Bootstrap(0,0));
 		} else { log::error!("Node at InternetID({}) doesn't exist", i)}
 		for j in 0..30 {
-			internet.run(100);
+			internet.tick(100);
 			//internet.gen_routing_plot(&format!("target/images/{:0>6}.png", (i-1)*30+j), (500, 500)).expect("Failed to output image");
 		}
 	}
@@ -75,7 +75,7 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 		Some(&"tick") => {
 			if let Some(Ok(num_ticks)) = command.next().map(|s|s.parse::<usize>()) {
 				println!("Running {} ticks", num_ticks);
-				internet.run(num_ticks);
+				internet.tick(num_ticks);
 			}
 		},
 		// Configuring network

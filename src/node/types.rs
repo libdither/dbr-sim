@@ -11,7 +11,7 @@ pub type NodeID = u32;
 pub type SessionID = u32;
 /// Coordinate that represents a position of a node relative to other nodes in 2D space.
 pub type RouteScalar = u64;
-pub type RouteCoord = (RouteScalar, RouteScalar);
+pub type RouteCoord = (i64, i64);
 
 /// Packets that are sent between nodes in this protocol.
 #[derive(Serialize, Deserialize, Debug, Clone)]
