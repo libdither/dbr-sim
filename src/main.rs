@@ -22,7 +22,7 @@ fn main() {
 
 	let mut internet = InternetSim::new();
 
-	for i in 0..2 {
+	for i in 0..4 {
 		let node2 = Node::new(i, internet.lease());
 		internet.add_node(node2);
 	}

@@ -19,10 +19,26 @@ pub enum NodePacket {
 	/// Send immediately after receiving a an Acknowledgement, allows other node to get a rough idea about the node's latency
 	/// Contains list of packets for remote to respond to 
 	ConnectionInit(PingID, Vec<NodePacket>),
+	/// Send multiple packets simultaneously
+	Multiple(Vec<NodePacket>),
+
+	/// Request 
+	RequestRouteCoord,
+	// Return routecoord
+	RouteCoord(Option<RouteCoord>),
+
 	/// Sent to other Nodes. Expects PingResponse returned
 	Ping(PingID), // Random number uniquely identifying this ping request
 	/// PingResponse packet, time between Ping and PingResponse is measured
 	PingResponse(PingID), // Acknowledge Ping(u64), sends back originally sent number
+
+	/// Send info to another peer in exchange for their info
+	ExchangeInfo(Option<RouteCoord>, usize, u64), // My Route coordinate, number of peers, remote ping
+	ExchangeInfoResponse(Option<RouteCoord>, usize, u64),
+	
+	/// Propose routing coordinates if nobody has any nodes
+	ProposeRouteCoords(RouteCoord, RouteCoord), // First route coord = other node, second route coord = myself
+	ProposeRouteCoordsResponse(RouteCoord, RouteCoord, bool), // Proposed route coords (original coordinates, orientation), bool = true if acceptable
 
 	/// Request to a peer for them to request their peers to ping me
 	RequestPings(usize), // usize: max number of pings
@@ -31,7 +47,8 @@ pub enum NodePacket {
 	WantPing(NodeID, InternetID),
 	/// Sent when node accepts a WantPing Request
 	/// * `NodeID`: NodeID of Node who send the request in response to a RequestPings
-	AcceptWantPing(NodeID),
+	/// * `u64`: Distance to that node
+	AcceptWantPing(NodeID, u64),
 
 	/// Notify another node of peership
 	/// * `usize`: Rank of how close peer is compared to other nodes, usize::MAX signifies no longer consider node
@@ -40,6 +57,7 @@ pub enum NodePacket {
 	/// Sent when node has a new peer that it thinks another node should connect to, prompts a Bootstrap request from other node
 	/// * `NodeID`: NodeID of new node who connected as a direct peer
 	// NewPeersHint(NodeID),
+
 
 	/// Represents a network traversal packet, It is routed through the network via it's RouteCoord
 	/// Vec<u8>: Represents encrypted data meant for a specific node
@@ -71,14 +89,13 @@ pub enum RemoteNodeError {
     UnknownAckRecipient { recipient: NodeID },
 	#[error("Received Acknowledgement even though there are no pending handshake requests")]
 	NoPendingHandshake,
-	#[error("Received handshake but earlier handshake request was already pending")]
-	SimultaneousHandshake,
 	#[error("Session Error")]
 	SessionError(#[from] SessionError),
 }
 #[derive(Debug)]
 pub struct RemoteNode {
 	pub node_id: NodeID, // The ID of the remote node
+	pub route_coord: Option<RouteCoord>,
 	pub handshake_pending: Option<(SessionID, usize, Vec<NodePacket>)>, // is Some(pending_session_id, time_sent_handshake, packets_to_send)
 	pub session: Option<RemoteSession>, // Session object, is None if no connection is active
 }
@@ -86,6 +103,7 @@ impl RemoteNode {
 	pub fn new(node_id: NodeID) -> Self {
 		Self {
 			node_id,
+			route_coord: None,
 			handshake_pending: None,
 			session: None,
 		}

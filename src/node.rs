@@ -1,4 +1,4 @@
-#[allow(dead_code)]
+#[allow(unused_variables)]
 
 const TARGET_PEER_COUNT: usize = 5;
 // Amount of time to wait to connect to a peer who wants to ping
@@ -6,10 +6,9 @@ const TARGET_PEER_COUNT: usize = 5;
 const MAX_REQUEST_PINGS: usize = 10;
 
 use std::collections::{HashMap, BTreeMap};
-//use std::cmp::Reverse;
 use std::any::Any;
 
-//use priority_queue::PriorityQueue;
+use petgraph::graphmap::DiGraphMap;
 
 pub use crate::internet::{CustomNode, InternetID, InternetPacket};
 
@@ -93,17 +92,18 @@ impl NodeAction {
 	}
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Node {
 	pub node_id: NodeID,
 	pub net_id: InternetID,
 
-	pub route_coord: RouteCoord,
+	pub route_coord: Option<RouteCoord>,
 	pub ticks: usize, // Amount of time passed since startup of this node
 
-	pub remotes: HashMap<NodeID, RemoteNode>, // All the remotes this node knows
-	pub sessions: HashMap<SessionID, NodeID>, // All the sessions currently active
-	pub node_list: BTreeMap<RouteScalar, NodeID>, // All tested nodes sorted by distance
+	pub remotes: HashMap<NodeID, RemoteNode>, // All remotes this node has ever connected to
+	pub sessions: HashMap<SessionID, NodeID>, // All sessions that have ever been initialized
+	pub node_list: BTreeMap<RouteScalar, NodeID>, // All nodes that have been tested, sorted by lowest value
+	pub route_map: DiGraphMap<NodeID, RouteScalar>, // Bi-directional graph of all locally known nodes and the estimated distances between them
 	// pub peered_nodes: PriorityQueue<SessionID, Reverse<RouteScalar>>, // Top subset of all 
 	pub actions_queue: Vec<NodeAction>, // Actions will wait here until NodeID session is established
 }
@@ -192,14 +192,7 @@ impl Node {
 		Node {
 			node_id,
 			net_id,
-
-			route_coord: Default::default(),
-			ticks: Default::default(),
-
-			remotes: Default::default(),
-			sessions: Default::default(),
-			node_list: Default::default(),
-			actions_queue: Default::default(),
+			..Default::default()
 		}
 	}
 	pub fn with_action(mut self, action: NodeAction) -> Self {
@@ -289,9 +282,9 @@ impl Node {
 			},
 			NodeAction::Bootstrap(remote_node_id, net_id) => {
 				// Initiate secure connection
-				self.action(NodeAction::Connect(remote_node_id, net_id, vec![]));
+				self.action(NodeAction::Connect(remote_node_id, net_id, vec![NodePacket::ExchangeInfo(self.route_coord, 0, 0)])); // ExchangeInfo packet will be filled in dynamically
 				// Test Direct connection
-				self.action(NodeAction::MaybeTestNode(remote_node_id).gen_condition(NodeActionCondition::Session(remote_node_id)));
+				//self.action(NodeAction::MaybeTestNode(remote_node_id).gen_condition(NodeActionCondition::Session(remote_node_id)));
 				// Ask for Pings
 				// self.action(NodeAction::RequestPeers(remote_node_id, TARGET_PEER_COUNT/2).gen_condition(NodeActionCondition::PeerTested(remote_node_id)));
 			},
@@ -312,24 +305,67 @@ impl Node {
 		match received_packet {
 			NodePacket::ConnectionInit(ping_id, packets) => {
 				// Acknowledge ping
-				self.remote_mut(&return_node_id)?.session_mut()?.tracker.acknowledge_ping(ping_id, self_ticks)?;
-				// Parse embedded packets
+				let distance = self.remote_mut(&return_node_id)?.session_mut()?.tracker.acknowledge_ping(ping_id, self_ticks)?;
+				self.route_map.add_edge(self.node_id, return_node_id, distance);
+				self.node_list.insert(distance, return_node_id);
+				// Recursively parse packets
 				for packet in packets {
 					self.parse_node_packet(return_node_id, packet, outgoing)?;
 				}
 			}
 			NodePacket::Ping(ping_id) => {
-				// Return ping
 				self.remote(&return_node_id)?.add_packet(NodePacket::PingResponse(ping_id), outgoing)?;
-				
 			},
 			NodePacket::PingResponse(ping_id) => {
-				// Acknowledge ping
-				let session = self.remote_mut(&return_node_id)?.session_mut()?;
-				session.tracker.acknowledge_ping(ping_id, self_ticks)?;
+				let distance = self.remote_mut(&return_node_id)?.session_mut()?.tracker.acknowledge_ping(ping_id, self_ticks)?;
+				self.route_map.add_edge(self.node_id, return_node_id, distance);
+			},
+			NodePacket::ExchangeInfo(remote_route_coord, remote_peer_count, remote_ping) => {
+				// Note dual-edge
+				self.route_map.add_edge(return_node_id, self.node_id, remote_ping);
+
+				let route_coord = self.route_coord;
+				let peer_count = self.remotes.len();
+				let remote = self.remote_mut(&return_node_id)?;
+				let ping = remote.session()?.tracker.dist_avg;
+				remote.route_coord = remote_route_coord; // Make note of routing coordinate if exists
+
+				remote.add_packet(NodePacket::ExchangeInfoResponse(route_coord, peer_count, ping), outgoing)?;
+				if remote_peer_count > 1 {
+					self.action(NodeAction::MaybeTestNode(return_node_id));
+				}
+			},
+			NodePacket::ExchangeInfoResponse(remote_route_coord, remote_peer_count, remote_ping) => {
+				// Note dual-edge
+				self.route_map.add_edge(return_node_id, self.node_id, remote_ping);
+				let remote = self.remote_mut(&return_node_id)?;
+				remote.route_coord = remote_route_coord; // Make note of routing coordinate if exists
+
+				let ping = remote.session()?.tracker.dist_avg;
+				if remote_peer_count <= 1 {
+					remote.add_packet(NodePacket::ProposeRouteCoords((0,0), (0,ping)), outgoing)?;
+				} else {
+					remote.add_packet(NodePacket::RequestPings(TARGET_PEER_COUNT), outgoing)?;
+				}
+			},
+			NodePacket::ProposeRouteCoords(route_coord_proposal, remote_route_coord_proposal) => {
+				if None == self.route_coord {
+					self.route_coord = Some(route_coord_proposal);
+					let remote = self.remote_mut(&return_node_id)?;
+					remote.route_coord = Some(remote_route_coord_proposal);
+					remote.add_packet(NodePacket::ProposeRouteCoordsResponse(route_coord_proposal, remote_route_coord_proposal, true), outgoing)?;
+				} else {
+					let remote = self.remote_mut(&return_node_id)?;
+					remote.add_packet(NodePacket::ProposeRouteCoordsResponse(route_coord_proposal, remote_route_coord_proposal, false), outgoing)?;
+				}
+			},
+			NodePacket::ProposeRouteCoordsResponse(initial_remote_proposal, initial_self_proposal, accepted) => {
+				if accepted {
+					self.route_coord = Some(initial_self_proposal);
+					self.remote_mut(&return_node_id)?.route_coord = Some(initial_remote_proposal);
+				}
 			},
 			NodePacket::RequestPings(requests) => {
-
 				if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
 				// Loop through first min(N,MAX_REQUEST_PINGS) items of priorityqueue
 				let num_requests = usize::min(requests, MAX_REQUEST_PINGS); // Maximum of 10 requests
@@ -348,13 +384,14 @@ impl Node {
 			// Initiate Direct Handshakes with people who want pings
 			NodePacket::WantPing(requesting_node_id, requesting_net_id) => {
 				if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
+				let distance_me_return = self.remote(&return_node_id)?.session()?.tracker.dist_avg;
 				if self.node_id != requesting_node_id {
 					// Connect to requested node
-					self.action(NodeAction::Connect(requesting_node_id, requesting_net_id, vec![NodePacket::AcceptWantPing(return_node_id)]));
-				} else { log::warn!("Node({}) received own WantPing", self.node_id) }
-				
+					self.action(NodeAction::Connect(requesting_node_id, requesting_net_id, vec![NodePacket::AcceptWantPing(return_node_id, distance_me_return)]));
+				} else { log::warn!("Node({}) received own WantPing", self.node_id); }
 			},
-			NodePacket::AcceptWantPing(_intermediate_node_id) => {
+			NodePacket::AcceptWantPing(intermediate_node_id, return_to_intermediate_distance) => {
+				self.route_map.add_edge(return_node_id, intermediate_node_id, return_to_intermediate_distance);
 				if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
 				self.action(NodeAction::MaybeTestNode(return_node_id));
 			},
@@ -410,15 +447,21 @@ impl Node {
 				let mut remote = self.remote_mut(&acknowledger)?;
 				if let Some((pending_session_id, time_sent_handshake, packets_to_send)) = remote.handshake_pending.take() {
 					if pending_session_id == session_id {
-						remote.handshake_pending = None;
+						// Create session and acknowledge out-of-tracker ping
 						let mut session = RemoteSession::from_id(session_id, return_net_id);
-						// Note ping
 						let ping_id = session.tracker.gen_ping(time_sent_handshake);
-						session.tracker.acknowledge_ping(ping_id, self_ticks)?;
-						remote.session = Some(session);
-						// Send return packets
-						remote.add_packet(NodePacket::ConnectionInit(return_ping_id, packets_to_send), outgoing)?;
+						let distance = session.tracker.acknowledge_ping(ping_id, self_ticks)?;
+						remote.session = Some(session); // update remote
+
+						// Update packets
+						let packets_to_send = self.update_connection_packets(acknowledger, packets_to_send)?;
+
+						// Send connection packets
+						self.remote_mut(&acknowledger)?.add_packet(NodePacket::ConnectionInit(return_ping_id, packets_to_send), outgoing)?;
 						self.sessions.insert(session_id, acknowledger);
+
+						self.node_list.insert(distance, acknowledger);
+						self.route_map.add_edge(self.node_id, acknowledger, distance);
 						log::debug!("[{: >4}] Node({:?}) Received Acknowledgement: {:?}", self_ticks, self_node_id, encrypted);
 						None
 					} else { Err( RemoteNodeError::UnknownAck { passed: session_id } )? }
@@ -429,5 +472,14 @@ impl Node {
 				Some((*return_node_id, packet))
 			},
 		})
+	}
+	fn update_connection_packets(&self, return_node_id: NodeID, packets: Vec<NodePacket>) -> Result<Vec<NodePacket>, NodeError> {
+		let distance = self.remote(&return_node_id)?.session()?.tracker.dist_avg;
+		Ok(packets.into_iter().map(|packet| match packet {
+			NodePacket::ExchangeInfo(_,_,_) => {
+				NodePacket::ExchangeInfo(self.route_coord, self.remotes.len(), distance)
+			},
+			_ => packet,
+		}).collect::<Vec<NodePacket>>())
 	}
 }
