@@ -8,6 +8,7 @@ const MAX_REQUEST_PINGS: usize = 10;
 use std::collections::{HashMap, BTreeMap};
 use std::any::Any;
 
+use nalgebra::{DMatrix, SymmetricEigen, Vector2};
 use petgraph::graphmap::DiGraphMap;
 
 pub use crate::internet::{CustomNode, InternetID, InternetPacket};
@@ -74,6 +75,8 @@ pub enum NodeAction {
 	MaybeTestNode(NodeID),
 	/// Request Peers of another node to ping me
 	RequestPeers(NodeID, usize),
+	/// Attempt to calculate self route coordinate
+	TryCalcRouteCoord,
 	/// Attempt to establish peership with another node
 	/// Will not sent NotifyPeer if node list rank > TARGET_PEER_COUNT
 	TryNotifyPeer(NodeID),
@@ -110,9 +113,9 @@ pub struct Node {
 impl CustomNode for Node {
 	type CustomNodeAction = NodeAction;
 	fn net_id(&self) -> InternetID { self.net_id }
-	fn tick(&mut self, incoming: Vec<InternetPacket>, cheat_position: &Option<(i32, i32)>) -> Vec<InternetPacket> {
+	fn tick(&mut self, incoming: Vec<InternetPacket>, _cheat_position: &Option<(i32, i32)>) -> Vec<InternetPacket> {
 		let mut outgoing: Vec<InternetPacket> = Vec::new();
-		self.route_coord = cheat_position.map(|c|(c.0 as i64, c.1 as i64));
+		//self.route_coord = cheat_position.map(|c|(c.0 as i64, c.1 as i64));
 
 		// Parse Incoming Packets
 		for packet in incoming {
@@ -218,6 +221,9 @@ impl Node {
 					let packet: InternetPacket = session.gen_packet(packet)?;
 					outgoing.push(packet);
 				}
+			},
+			NodeAction::TryCalcRouteCoord => {
+				self.route_coord = Some(self.calculate_route_coord()?);
 			},
 			NodeAction::MaybeTestNode(remote_node_id) => {
 				// If have active session
@@ -332,11 +338,13 @@ impl Node {
 				remote.route_coord = remote_route_coord; // Make note of routing coordinate if exists
 
 				remote.add_packet(NodePacket::ExchangeInfoResponse(route_coord, peer_count, ping), outgoing)?;
-				if remote_peer_count > 1 {
+				/*if remote_peer_count > 1 {
 					self.action(NodeAction::MaybeTestNode(return_node_id));
-				}
+				}*/
 			},
 			NodePacket::ExchangeInfoResponse(remote_route_coord, remote_peer_count, remote_ping) => {
+				let self_node_count = self.node_list.len();
+				
 				// Note dual-edge
 				self.route_map.add_edge(return_node_id, self.node_id, remote_ping);
 				let remote = self.remote_mut(&return_node_id)?;
@@ -346,7 +354,15 @@ impl Node {
 				if remote_peer_count <= 1 && remote_route_coord.is_none() {
 					remote.add_packet(NodePacket::ProposeRouteCoords((0,0), (0,ping as i64)), outgoing)?;
 				} else {
-					remote.add_packet(NodePacket::RequestPings(TARGET_PEER_COUNT), outgoing)?;
+					
+					// If not at target, it is small network, attempt to calculate
+					if self_node_count == remote_peer_count && self_node_count < TARGET_PEER_COUNT {
+						self.action(NodeAction::TryCalcRouteCoord);
+					} else if self_node_count < TARGET_PEER_COUNT { // If not found all targets on small network
+						remote.add_packet(NodePacket::RequestPings(TARGET_PEER_COUNT), outgoing)?;
+					} else { // It is large network
+						self.action(NodeAction::TryCalcRouteCoord);
+					}
 				}
 			},
 			NodePacket::ProposeRouteCoords(route_coord_proposal, remote_route_coord_proposal) => {
@@ -380,7 +396,7 @@ impl Node {
 					}
 				}
 
-				self.action(NodeAction::MaybeTestNode(return_node_id));
+				//self.action(NodeAction::MaybeTestNode(return_node_id));
 			},
 			// Initiate Direct Handshakes with people who want pings
 			NodePacket::WantPing(requesting_node_id, requesting_net_id) => {
@@ -394,7 +410,14 @@ impl Node {
 			NodePacket::AcceptWantPing(intermediate_node_id, return_to_intermediate_distance) => {
 				self.route_map.add_edge(return_node_id, intermediate_node_id, return_to_intermediate_distance);
 				if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
-				self.action(NodeAction::MaybeTestNode(return_node_id));
+
+				let self_route_coord = self.route_coord;
+				let self_node_count = self.node_list.len();
+				let remote = self.remote(&return_node_id)?;
+				//self.action(NodeAction::MaybeTestNode(return_node_id));
+				remote.add_packet(NodePacket::ExchangeInfo(self_route_coord, self_node_count, remote.session()?.tracker.dist_avg), outgoing)?;
+				//self.action(NodeAction::TryCalcRouteCoord);
+				
 			},
 			// Receive notification that another node has found me it's closest
 			NodePacket::PeerNotify(rank) => {
@@ -483,28 +506,97 @@ impl Node {
 			_ => packet,
 		}).collect::<Vec<NodePacket>>())
 	}
-	/* fn calculate_route_coord(&mut self) -> Result<RouteCoord, NodeError> {
+	fn calculate_route_coord(&mut self) -> Result<RouteCoord, NodeError> {
 		// TODO: Implement multidimensional scaling to calculate new route coordinates
+		println!("node_list: {:?}", self);
+		let nodes: Vec<(NodeID, RouteCoord)> = self.node_list.iter().filter_map(|(_,&n)|self.remote(&n).ok().map(|n|n.route_coord).flatten().map(|s|(n,s))).collect();
+		let mat_size = nodes.len() + 1;
+		
+		println!("filtered_node_list: {:?}", nodes);
+		let mut proximity_matrix = DMatrix::from_element(mat_size, mat_size, 0f64);
+		
+		// This is inefficient b.c. multiple vector creation but whatever
+		let (mut first_row_insert, node_id_index): (Vec<u64>, Vec<NodeID>) = self.route_map.edges(self.node_id).map(|(_,n,&e)|(e,n)).unzip();
+		first_row_insert.insert(0, 0);
 
-		// This is temporary, only uses two closest nodes
-		let first_node_id = *self.node_list.values().nth(0).ok_or(NodeError::NoDirectNodes)?;
-		let second_node_id = *self.node_list.values().nth(1).ok_or(NodeError::NoDirectNodes)?;
+		// Fill first row and collumn
+		first_row_insert.iter().enumerate().for_each(|(i,&w)| {
+			proximity_matrix[(0,i)] = w as f64;
+			proximity_matrix[(i,0)] = w as f64;
+		});
+
+		node_id_index.iter().enumerate().for_each(|(i_y, id_y)|{
+			node_id_index.iter().enumerate().for_each(|(i_x, id_x)|{
+				let coord_x = self.remote(id_x).unwrap().route_coord.unwrap();
+				let coord_y = self.remote(id_y).unwrap().route_coord.unwrap();
+				let dist_vec = Vector2::new(coord_x.0 as f64, coord_x.1 as f64) - Vector2::new(coord_y.0 as f64,coord_y.1 as f64);
+				let dist = dist_vec.norm();
+				proximity_matrix[(i_y+1, i_x+1)] = dist;
+				proximity_matrix[(i_x+1, i_y+1)] = dist;
+			});
+		});
+		/*use nalgebra::Matrix4;
+		let mat_size = 4;
+		let proximity_matrix = Matrix4::new(
+			0.,93.,82.,133.,
+			93.,0.,52.,60.,
+			82.,52.,0.,111.,
+			133.,60.,111.,0.);*/
+
+		println!("Proximity Matrix: {}", proximity_matrix);
+		// Adapted from: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.495.4629&rep=rep1&type=pdf
+		// STUPID STUPID STUPID WHY IS THERE NO POWER FUNCTION IN NALGEBRA LIBRARY WHY???? I SPENT 3 HOURS TRYING TO FIX THIS
+		// TODO: use component_mul
+		let proximity_squared = DMatrix::from_iterator(mat_size, mat_size, proximity_matrix.iter().map(|v|v*v)); 
+		println!("Proximity Squared: {}", proximity_squared);
 		
-		let first_coord = self.remote(&first_node_id)?.route_coord.ok_or(NodeError::NoDirectNodes)?; // Checked earlier
-		let second_coord = self.remote(&second_node_id)?.route_coord.ok_or(NodeError::NoDirectNodes)?;
-		let first_second_len = self.route_map.edge_weight(first_node_id, second_node_id).ok_or(NodeError::NoDirectNodes)?;
-		let self_first_len = self.route_map.edge_weight(self.node_id, first_node_id).ok_or(NodeError::NoDirectNodes)?;
-		let self_second_len = self.route_map.edge_weight(self.node_id, second_node_id).ok_or(NodeError::NoDirectNodes)?;
+		let j_matrix = DMatrix::from_diagonal_element(mat_size, mat_size, 1.) - DMatrix::from_element(mat_size, mat_size, 1./mat_size as f64);
 		
-		// Adapted from: https://math.stackexchange.com/a/1989113
-		//use std::u64::pow;
-		let new_route_coord_y = (first_second_len.pow(2) + self_first_len.pow(2) - self_second_len.pow(2)) / (2 * first_second_len);
-		let new_route_coord_x = f64::sqrt((self_first_len.pow(2) - new_route_coord_y.pow(2)) as f64) as u64;
-		let new_route_coord: RouteCoord = (new_route_coord_x, new_route_coord_y);
-		Ok(new_route_coord)
-	} */
-	/* fn get_third_point(first_point: RouteCoord, second_point: RouteCoord, first_second: RouteScalar, first_third: RouteScalar, second_third: RouteScalar) -> () {
-		let result = RouteCoord(0, 0);
-		result.x = (first_second.pow(2) + first_third.pow(2) - second_third.pow(2)) / (2 * first_second)
-	} */
+		let b_matrix = -0.5 * j_matrix.clone() * proximity_squared * j_matrix;
+		
+		// Calculate Eigenvectors and Eigenvalues and choose the 2 biggest ones
+		let eigen = SymmetricEigen::try_new(b_matrix.clone(), 0., 0).unwrap();
+		let eigenvalues: Vec<f64> = eigen.eigenvalues.data.as_vec().clone();
+		let max_eigenvalue = eigenvalues.iter().enumerate().max_by(|(_,&ev1),(_,ev2)|ev1.partial_cmp(ev2).unwrap()).unwrap();
+		let second_max_eigenvalue = eigenvalues.iter().enumerate().filter(|(i,_)|*i!=max_eigenvalue.0).max_by(|(_,&ev1),(_,ev2)|ev1.partial_cmp(ev2).unwrap()).unwrap();
+
+		let top_eigenvalues = nalgebra::Matrix2::new(max_eigenvalue.1.abs().sqrt(), 0., 0., second_max_eigenvalue.1.abs().sqrt()); // Eigenvalue matrix
+		let top_eigenvectors = DMatrix::from_fn(mat_size, 2, |r,c| if c==0 { eigen.eigenvectors[(r,max_eigenvalue.0)] } else { eigen.eigenvectors[(r,second_max_eigenvalue.0)] });
+		let x_matrix = top_eigenvectors.clone() * top_eigenvalues; // Output, index 0 needs to be mapped to virtual routecoord coordinates based on other indices
+		println!("{} * {} = {}", top_eigenvectors, top_eigenvalues, x_matrix);
+		println!("Index: {:?}", node_id_index);
+
+		let v1_routecoord = self.remote(&node_id_index[0])?.route_coord.unwrap();
+		let v1 = Vector2::new(v1_routecoord.0 as f64, v1_routecoord.1 as f64);
+		let v2_routecoord = self.remote(&node_id_index[1])?.route_coord.unwrap();
+		let v2 = Vector2::new(v2_routecoord.0 as f64, v2_routecoord.1 as f64);
+		use nalgebra::{U2, U1};
+		let x1 = x_matrix.row(1).clone_owned().reshape_generic(U2,U1);
+		println!("x1: {}", x1);
+		println!("v1: {}, v2: {}", v1, v2);
+		let x_shift = v1 - x1;
+		let x1s = x1 + x_shift;
+		let x2s = x_matrix.row(2).clone_owned().reshape_generic(U2,U1) + x_shift;
+		let x3s = x_matrix.row(0).clone_owned().reshape_generic(U2,U1) + x_shift;
+		println!("x1s: {}, x2s: {}", x1s, x2s);
+
+		let xd = x1s - x2s;
+		let vd = v1 - v2;
+		let cos_a = (vd[1] + vd[0]) / (2. * xd[0]);
+		let sin_a = (vd[1] - vd[0]) / (2. * xd[1]);
+		//let a = atan2(sin_a, cos_a);
+		
+		use nalgebra::Matrix2;
+		let rot = Matrix2::new(cos_a, -sin_a, sin_a, cos_a);
+		//let shift = Vector2::new(0,0) - x_matrix[1];
+		let v3_g = rot * x3s;
+		println!("v3 guess: {}", v3_g);
+		let distance_v2 = v3_g.metric_distance(&v2);
+		let distance_v1 = v3_g.metric_distance(&v1);
+		println!("dist from v3_guess to v1: {}, v2: {}", distance_v1, distance_v2);
+		
+
+		Ok((v3_g[0] as i64, v3_g[1] as i64))
+		/* Ok((0,0)) */
+	}
 }
