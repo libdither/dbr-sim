@@ -9,6 +9,7 @@ use std::any::Any;
 use plotters::prelude::*;
 use plotters::coord::types::RangedCoordf32;
 use nalgebra::Vector2;
+use rand::Rng;
 
 pub type InternetID = usize;
 
@@ -44,7 +45,7 @@ impl<CN: CustomNode> InternetSim<CN> {
 	pub fn del_node(&mut self, net_id: InternetID) { self.nodes.remove(&net_id); }
 	pub fn node_mut(&mut self, node_id: InternetID) -> Option<&mut CN> { self.nodes.get_mut(&node_id) }
 	pub fn node(&self, node_id: InternetID) -> Option<&CN> { self.nodes.get(&node_id) }
-	pub fn tick(&mut self, ticks: usize) {
+	pub fn tick(&mut self, ticks: usize, rng: &mut impl Rng) {
 		//let packets_tmp = Vec::new();
 		for _ in 0..ticks {
 			for node in self.nodes.values_mut() {
@@ -59,7 +60,7 @@ impl<CN: CustomNode> InternetSim<CN> {
 				// Make outgoing packets have the correct return address
 				for packet in &mut outgoing_packets { packet.src_addr = node.net_id(); }
 				// Send packets through the router
-				self.router.add_packets(outgoing_packets);
+				self.router.add_packets(outgoing_packets, rng);
 			}
 		}
 	}

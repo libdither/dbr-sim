@@ -14,15 +14,17 @@ pub mod internet;
 use internet::{InternetID, InternetSim, CustomNode};
 pub mod node;
 use node::{Node, NodeAction, NodeID, NodeActionCondition};
+use rand::SeedableRng;
 
 fn main() {
 	env_logger::init();
 	println!("Hello, Network!");
 	let _ = std::fs::create_dir_all("target/images");
 
+	let rng = &mut rand::rngs::SmallRng::seed_from_u64(0);
 	let mut internet = InternetSim::new();
 
-	for i in 0..20 {
+	for i in 0..3 {
 		let node2 = Node::new(i, internet.lease());
 		internet.add_node(node2);
 	}
@@ -31,8 +33,8 @@ fn main() {
 		if let Some(node) = internet.node_mut(i) {
 			node.action(NodeAction::Bootstrap(0,0));
 		} else { log::error!("Node at InternetID({}) doesn't exist", i)}
-		for j in 0..30 {
-			internet.tick(100);
+		for _j in 0..30 {
+			internet.tick(100, rng);
 			//internet.gen_routing_plot(&format!("target/images/{:0>6}.png", (i-1)*30+j), (500, 500)).expect("Failed to output image");
 		}
 	}
@@ -46,7 +48,7 @@ fn main() {
 			// Look for 
 			let input: Vec<&str> = split_regex.find_iter(&line[..]).flatten().map(|m|m.as_str()).collect();
 			
-			if let Err(err) = parse_command(&mut internet, &input) {
+			if let Err(err) = parse_command(&mut internet, &input, rng) {
 				println!("Error: {:?}", err);
 			}
 			
@@ -55,7 +57,7 @@ fn main() {
 }
 
 use std::error::Error;
-fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<(), Box<dyn Error>> {
+fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>, rng: &mut impl rand::Rng) -> Result<(), Box<dyn Error>> {
 	let mut command = input.iter();
 	match command.next() {
 		// Adding Nodes
@@ -75,7 +77,7 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 		Some(&"tick") => {
 			if let Some(Ok(num_ticks)) = command.next().map(|s|s.parse::<usize>()) {
 				println!("Running {} ticks", num_ticks);
-				internet.tick(num_ticks);
+				internet.tick(num_ticks, rng);
 			}
 		},
 		// Configuring network
@@ -90,6 +92,8 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>) -> Result<
 			if let Some(subcommand) = command.next() {
 				match *subcommand {
 					"peered" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.node_list)),
+					"router" => internet.router.speed_map.iter().for_each(|(net_id,lc)| println!("{}: {:?}", net_id, lc)),
+					"routes" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.route_coord)),
 					_ => { println!("list: unknown subcommand") }
 				}
 			} else {
