@@ -507,9 +507,9 @@ impl Node {
 		}).collect::<Vec<NodePacket>>())
 	}
 	fn calculate_route_coord(&mut self) -> Result<RouteCoord, NodeError> {
-		// TODO: Implement multidimensional scaling to calculate new route coordinates
-		println!("node_list: {:?}", self);
-		let nodes: Vec<(NodeID, RouteCoord)> = self.node_list.iter().filter_map(|(_,&n)|self.remote(&n).ok().map(|n|n.route_coord).flatten().map(|s|(n,s))).collect();
+		// TODO: Refactor this implementation of multidimensional scaling
+		println!("node_list: {:?}", self.remotes.iter().map(|(&id,n)|(id,n.route_coord)).collect::<Vec<(NodeID,Option<RouteCoord>)>>() );
+		let nodes: Vec<(NodeID, RouteCoord)> = self.node_list.iter().filter_map(|(_,&node_id)|self.remote(&node_id).ok().map(|node|node.route_coord.map(|s|(node_id,s))).flatten()).collect();
 		let mat_size = nodes.len() + 1;
 		
 		println!("filtered_node_list: {:?}", nodes);
@@ -543,12 +543,9 @@ impl Node {
 			82.,52.,0.,111.,
 			133.,60.,111.,0.);*/
 
-		println!("Proximity Matrix: {}", proximity_matrix);
-		// Adapted from: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.495.4629&rep=rep1&type=pdf
-		// STUPID STUPID STUPID WHY IS THERE NO POWER FUNCTION IN NALGEBRA LIBRARY WHY???? I SPENT 3 HOURS TRYING TO FIX THIS
-		// TODO: use component_mul
-		let proximity_squared = DMatrix::from_iterator(mat_size, mat_size, proximity_matrix.iter().map(|v|v*v)); 
-		println!("Proximity Squared: {}", proximity_squared);
+		//println!("Proximity Matrix: {}", proximity_matrix);
+		// Algorithm for Multidimensional Scaling (MDS) Adapted from: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.495.4629&rep=rep1&type=pdf
+		let proximity_squared = proximity_matrix.component_mul(&proximity_matrix); 
 		
 		let j_matrix = DMatrix::from_diagonal_element(mat_size, mat_size, 1.) - DMatrix::from_element(mat_size, mat_size, 1./mat_size as f64);
 		
@@ -563,40 +560,34 @@ impl Node {
 		let top_eigenvalues = nalgebra::Matrix2::new(max_eigenvalue.1.abs().sqrt(), 0., 0., second_max_eigenvalue.1.abs().sqrt()); // Eigenvalue matrix
 		let top_eigenvectors = DMatrix::from_fn(mat_size, 2, |r,c| if c==0 { eigen.eigenvectors[(r,max_eigenvalue.0)] } else { eigen.eigenvectors[(r,second_max_eigenvalue.0)] });
 		let x_matrix = top_eigenvectors.clone() * top_eigenvalues; // Output, index 0 needs to be mapped to virtual routecoord coordinates based on other indices
-		println!("{} * {} = {}", top_eigenvectors, top_eigenvalues, x_matrix);
-		println!("Index: {:?}", node_id_index);
-
+		
+		// Map MDS output to 2 RouteCoordinates
+		// TODO: Refactor this messy code
 		let v1_routecoord = self.remote(&node_id_index[0])?.route_coord.unwrap();
 		let v1 = Vector2::new(v1_routecoord.0 as f64, v1_routecoord.1 as f64);
 		let v2_routecoord = self.remote(&node_id_index[1])?.route_coord.unwrap();
 		let v2 = Vector2::new(v2_routecoord.0 as f64, v2_routecoord.1 as f64);
 		use nalgebra::{U2, U1};
 		let x1 = x_matrix.row(1).clone_owned().reshape_generic(U2,U1);
-		println!("x1: {}", x1);
-		println!("v1: {}, v2: {}", v1, v2);
+		//println!("x1: {}", x1);
+		//println!("v1: {}, v2: {}", v1, v2);
 		let x_shift = v1 - x1;
 		let x1s = x1 + x_shift;
 		let x2s = x_matrix.row(2).clone_owned().reshape_generic(U2,U1) + x_shift;
 		let x3s = x_matrix.row(0).clone_owned().reshape_generic(U2,U1) + x_shift;
-		println!("x1s: {}, x2s: {}", x1s, x2s);
+		//println!("x1s: {}, x2s: {}, x3s: {}", x1s, x2s, x3s);
 
 		let xd = x1s - x2s;
 		let vd = v1 - v2;
 		let cos_a = (vd[1] + vd[0]) / (2. * xd[0]);
 		let sin_a = (vd[1] - vd[0]) / (2. * xd[1]);
-		//let a = atan2(sin_a, cos_a);
+		//println!("cos_a: {}, sin_a: {}", cos_a, sin_a);
+		let a = f64::atan2(sin_a, cos_a);
 		
 		use nalgebra::Matrix2;
-		let rot = Matrix2::new(cos_a, -sin_a, sin_a, cos_a);
-		//let shift = Vector2::new(0,0) - x_matrix[1];
+		let rot = Matrix2::new(a.cos(), -a.sin(), a.sin(), a.cos());
 		let v3_g = rot * x3s;
-		println!("v3 guess: {}", v3_g);
-		let distance_v2 = v3_g.metric_distance(&v2);
-		let distance_v1 = v3_g.metric_distance(&v1);
-		println!("dist from v3_guess to v1: {}, v2: {}", distance_v1, distance_v2);
-		
 
 		Ok((v3_g[0] as i64, v3_g[1] as i64))
-		/* Ok((0,0)) */
 	}
 }

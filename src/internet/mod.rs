@@ -69,9 +69,10 @@ impl<CN: CustomNode> InternetSim<CN> {
 
 		root.fill(&RGBColor(200,200,200))?;
 
+		// Make sure it uses correct graph layout with 4 quadrants
 		let root = root.apply_coord_spec(Cartesian2d::<RangedCoordf32, RangedCoordf32>::new(
 			-1f32..1f32,
-			-1f32..1f32,
+			1f32..-1f32,
 			(0..dimensions.0 as i32, 0..dimensions.1 as i32),
 		));
 		use plotters::style::text_anchor::{Pos, HPos, VPos};
