@@ -139,6 +139,7 @@ impl NodeEncryption {
 			src_addr: 0, // This should get filled in automatically for all outgoing packets
 			data: serde_json::to_vec(&self).expect("Failed to encode json"),
 			dest_addr,
+			request: None,
 		}
 	}
 	pub fn unpackage(packet: &InternetPacket) -> Result<Self, serde_json::Error> {

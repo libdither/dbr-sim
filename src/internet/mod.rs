@@ -3,7 +3,7 @@
 mod router;
 use router::InternetRouter;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::Debug};
 use std::any::Any;
 
 use plotters::prelude::*;
@@ -11,19 +11,30 @@ use plotters::coord::types::RangedCoordf32;
 use nalgebra::Vector2;
 use rand::Rng;
 
+use crate::node::{NodeID, RouteCoord};
+
 pub type InternetID = usize;
+
+#[derive(Debug)]
+pub enum InternetRequest {
+	RouteCoordDHTRead(NodeID),
+	RouteCoordDHTWrite(NodeID, RouteCoord),
+	RouteCoordDHTResponse(Option<(NodeID, RouteCoord)>),
+}
 
 #[derive(Default, Debug)]
 pub struct InternetPacket {
 	pub dest_addr: InternetID,
 	pub data: Vec<u8>,
 	pub src_addr: InternetID,
+	pub request: Option<InternetRequest>,
 }
+impl InternetPacket { pub fn gen_request(dest_addr: InternetID, request: InternetRequest) -> Self { Self { dest_addr, data: vec![], src_addr: dest_addr, request: Some(request) } } }
 
 pub trait CustomNode: std::fmt::Debug {
 	type CustomNodeAction;
 	fn net_id(&self) -> InternetID;
-	fn tick(&mut self, incoming: Vec<InternetPacket>, cheat_position: &Option<(i32, i32)>) -> Vec<InternetPacket>;
+	fn tick(&mut self, incoming: Vec<InternetPacket>) -> Vec<InternetPacket>;
 	fn action(&mut self, action: Self::CustomNodeAction);
 	fn as_any(&self) -> &dyn Any;
 }
@@ -32,12 +43,14 @@ pub trait CustomNode: std::fmt::Debug {
 pub struct InternetSim<CN: CustomNode> {
 	pub nodes: HashMap<InternetID, CN>,
 	pub router: InternetRouter,
+	route_coord_dht: HashMap<NodeID, RouteCoord>,
 }
 impl<CN: CustomNode> InternetSim<CN> {
 	pub fn new() -> InternetSim<CN> {
 		InternetSim {
 			nodes: HashMap::new(),
 			router: Default::default(),
+			route_coord_dht: HashMap::new(),
 		}
 	}
 	pub fn lease(&self) -> InternetID { self.nodes.len() }
@@ -52,13 +65,24 @@ impl<CN: CustomNode> InternetSim<CN> {
 				// Get Packets going to node
 				let incoming_packets = self.router.tick_node(node.net_id());
 				// Get packets coming from node
-				// Tells each node what its exact position in the router is, to be replaced with Principal Coordinates Analysis & MDS
-				let cheat_position = &self.router.speed_map.get(&node.net_id()).map(|lc|lc.position);
-				//println!("{:?}: {:?}", node.net_id(), cheat_position);
-				let mut outgoing_packets = node.tick(incoming_packets, cheat_position);
+				let mut outgoing_packets = node.tick(incoming_packets);
 
-				// Make outgoing packets have the correct return address
-				for packet in &mut outgoing_packets { packet.src_addr = node.net_id(); }
+				// Make outgoing packets have the correct return address or parse request
+				for packet in &mut outgoing_packets {
+					packet.src_addr = node.net_id();
+					match packet.request {
+						Some(InternetRequest::RouteCoordDHTRead(node_id)) => {
+							packet.dest_addr = packet.src_addr;
+							packet.request = Some(InternetRequest::RouteCoordDHTResponse(self.route_coord_dht.get(&node_id).map(|&rc|(node_id,rc))))
+						},
+						Some(InternetRequest::RouteCoordDHTWrite(node_id, route_coord)) => {
+							packet.dest_addr = packet.src_addr;
+							let old_route = self.route_coord_dht.insert(node_id, route_coord);
+							packet.request = Some(InternetRequest::RouteCoordDHTResponse( old_route.map(|r|(node_id, r) )));
+						}
+						_ => {},
+					}
+				}
 				// Send packets through the router
 				self.router.add_packets(outgoing_packets, rng);
 			}

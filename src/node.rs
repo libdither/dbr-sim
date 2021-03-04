@@ -113,9 +113,8 @@ pub struct Node {
 impl CustomNode for Node {
 	type CustomNodeAction = NodeAction;
 	fn net_id(&self) -> InternetID { self.net_id }
-	fn tick(&mut self, incoming: Vec<InternetPacket>, _cheat_position: &Option<(i32, i32)>) -> Vec<InternetPacket> {
+	fn tick(&mut self, incoming: Vec<InternetPacket>) -> Vec<InternetPacket> {
 		let mut outgoing: Vec<InternetPacket> = Vec::new();
-		//self.route_coord = cheat_position.map(|c|(c.0 as i64, c.1 as i64));
 
 		// Parse Incoming Packets
 		for packet in incoming {
@@ -535,14 +534,6 @@ impl Node {
 				proximity_matrix[(i_x+1, i_y+1)] = dist;
 			});
 		});
-		/*use nalgebra::Matrix4;
-		let mat_size = 4;
-		let proximity_matrix = Matrix4::new(
-			0.,93.,82.,133.,
-			93.,0.,52.,60.,
-			82.,52.,0.,111.,
-			133.,60.,111.,0.);*/
-
 		//println!("Proximity Matrix: {}", proximity_matrix);
 		// Algorithm for Multidimensional Scaling (MDS) Adapted from: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.495.4629&rep=rep1&type=pdf
 		let proximity_squared = proximity_matrix.component_mul(&proximity_matrix); 
