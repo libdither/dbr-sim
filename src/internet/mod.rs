@@ -37,6 +37,7 @@ pub trait CustomNode: std::fmt::Debug {
 	fn tick(&mut self, incoming: Vec<InternetPacket>) -> Vec<InternetPacket>;
 	fn action(&mut self, action: Self::CustomNodeAction);
 	fn as_any(&self) -> &dyn Any;
+	fn set_deus_ex_data(&mut self, data: Option<RouteCoord>);
 }
 
 #[derive(Debug)]
@@ -54,22 +55,22 @@ impl<CN: CustomNode> InternetSim<CN> {
 		}
 	}
 	pub fn lease(&self) -> InternetID { self.nodes.len() }
-	pub fn add_node(&mut self, node: CN) { self.nodes.insert(node.net_id(), node); }
+	pub fn add_node(&mut self, node: CN) { self.nodes.insert(node.net_id(), node); } 
 	pub fn del_node(&mut self, net_id: InternetID) { self.nodes.remove(&net_id); }
 	pub fn node_mut(&mut self, node_id: InternetID) -> Option<&mut CN> { self.nodes.get_mut(&node_id) }
 	pub fn node(&self, node_id: InternetID) -> Option<&CN> { self.nodes.get(&node_id) }
 	pub fn tick(&mut self, ticks: usize, rng: &mut impl Rng) {
 		//let packets_tmp = Vec::new();
 		for _ in 0..ticks {
-			for node in self.nodes.values_mut() {
+			for (&node_net_id, node) in self.nodes.iter_mut() {
 				// Get Packets going to node
-				let incoming_packets = self.router.tick_node(node.net_id());
+				let incoming_packets = self.router.tick_node(node_net_id);
 				// Get packets coming from node
 				let mut outgoing_packets = node.tick(incoming_packets);
 
 				// Make outgoing packets have the correct return address or parse request
 				for packet in &mut outgoing_packets {
-					packet.src_addr = node.net_id();
+					packet.src_addr = node_net_id;
 					match packet.request {
 						Some(InternetRequest::RouteCoordDHTRead(node_id)) => {
 							packet.dest_addr = packet.src_addr;
@@ -85,6 +86,7 @@ impl<CN: CustomNode> InternetSim<CN> {
 				}
 				// Send packets through the router
 				self.router.add_packets(outgoing_packets, rng);
+				if let Some(lc) = self.router.speed_map.get(&node_net_id) { node.set_deus_ex_data( Some((lc.position.0 as i64, lc.position.1 as i64)) ) }
 			}
 		}
 	}

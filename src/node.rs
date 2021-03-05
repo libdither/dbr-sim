@@ -10,6 +10,7 @@ use std::any::Any;
 
 use nalgebra::{DMatrix, SymmetricEigen, Vector2};
 use petgraph::graphmap::DiGraphMap;
+use bimap::BiHashMap;
 
 pub use crate::internet::{CustomNode, InternetID, InternetPacket};
 
@@ -30,16 +31,9 @@ pub enum NodeActionCondition {
 	/// Yields if a time in the future has passed
 	RunAt(usize), 
 }
-#[derive(Error, Debug)]
-pub enum NodeActionConditionError {
-    #[error("Node Error")]
-	NodeError(#[from] NodeError),
-	#[error("RemoteNode Error")]
-	RemoteNodeError(#[from] RemoteNodeError),
-}
 impl NodeActionCondition {
 	// Returns None if condition should be tested again, else returns Some(Self) if condition is passed
-	fn test(self, node: &mut Node) -> Result<Option<Self>, NodeActionConditionError> {
+	fn test(self, node: &mut Node) -> Result<Option<Self>, NodeError> {
 		Ok(match self {
 			// Yields if there is a session
 			NodeActionCondition::Session(node_id) => node.remote(&node_id)?.session_active().then(||self),
@@ -95,17 +89,20 @@ impl NodeAction {
 	}
 }
 
-#[derive(Debug, Default)]
+#[derive(Default, Derivative)]
+#[derivative(Debug)]
 pub struct Node {
 	pub node_id: NodeID,
 	pub net_id: InternetID,
 
-	pub route_coord: Option<RouteCoord>,
+	pub deux_ex_data: Option<RouteCoord>,
+	pub route_coord: Option<RouteCoord>, // This node's route coordinate (None if not yet calculated)
 	pub ticks: usize, // Amount of time passed since startup of this node
 
 	pub remotes: HashMap<NodeID, RemoteNode>, // All remotes this node has ever connected to
-	pub sessions: HashMap<SessionID, NodeID>, // All sessions that have ever been initialized
+	pub sessions: BiHashMap<SessionID, NodeID>, // Each SessionID links to a unique NodeID
 	pub node_list: BTreeMap<u64, NodeID>, // All nodes that have been tested, sorted by lowest value
+	#[derivative(Debug="ignore")]
 	pub route_map: DiGraphMap<NodeID, u64>, // Bi-directional graph of all locally known nodes and the estimated distances between them
 	// pub peered_nodes: PriorityQueue<SessionID, Reverse<RouteScalar>>, // Top subset of all 
 	pub actions_queue: Vec<NodeAction>, // Actions will wait here until NodeID session is established
@@ -123,11 +120,11 @@ impl CustomNode for Node {
 			match self.parse_packet(packet, &mut outgoing) {
 				Ok(Some((return_node_id, node_packet))) => {
 					if let Err(err) = self.parse_node_packet(return_node_id, node_packet, &mut outgoing) {
-						log::error!("Error in parsing NodePacket from NodeID({}) to NodeID({}): {:?}", return_node_id, self.node_id, err);
+						log::error!("Error in parsing NodePacket from NodeID({}) to NodeID({}): {:?}", return_node_id, self.node_id, anyhow::Error::new(err));
 					}
 				},
 				Ok(None) => {},
-				Err(err) => log::error!("Error in parsing InternetPacket from InternetID({}) to InternetID({}): {:?}", src_addr, dest_addr, err),
+				Err(err) => { log::error!("Error in parsing InternetPacket from InternetID({}) to InternetID({}): {:?}", src_addr, dest_addr, anyhow::Error::new(err)); println!("{:?}", self); }
 			}
 		}
 		
@@ -155,6 +152,9 @@ impl CustomNode for Node {
 	}
 	fn action(&mut self, action: NodeAction) { self.actions_queue.push(action); }
 	fn as_any(&self) -> &dyn Any { self }
+	fn set_deus_ex_data(&mut self, data: Option<RouteCoord>) {
+		self.deux_ex_data = data;
+	}
 }
 #[derive(Error, Debug)]
 pub enum NodeError {
@@ -174,21 +174,11 @@ pub enum NodeError {
 	SessionError(#[from] SessionError),
 	#[error("Failed to decode packet data")]
 	SerdeDecodeError(#[from] serde_json::Error),
-	#[error("There are no known directly connected nodes")]
-	NoDirectNodes,
+	/* #[error("There are no known directly connected nodes")]
+	NoDirectNodes, */
+	#[error(transparent)]
+    Other(#[from] anyhow::Error),
 }
-#[derive(Error, Debug)]
-pub enum ActionError {
-    #[error("Node Error")]
-	NodeError(#[from] NodeError),
-	#[error("RemoteNode Error")]
-	RemoteNodeError(#[from] RemoteNodeError),
-	#[error("Session Error")]
-	SessionError(#[from] SessionError),
-	#[error("NodeActionCondition Error")]
-	NodeActionConditionError(#[from] NodeActionConditionError),
-}
-
 
 impl Node {
 	pub fn new(node_id: NodeID, net_id: InternetID) -> Node {
@@ -205,7 +195,7 @@ impl Node {
 	pub fn remote(&self, node_id: &NodeID) -> Result<&RemoteNode, NodeError> { self.remotes.get(node_id).ok_or(NodeError::NoRemoteError{node_id: *node_id}) }
 	pub fn remote_mut(&mut self, node_id: &NodeID) -> Result<&mut RemoteNode, NodeError> { self.remotes.get_mut(node_id).ok_or(NodeError::NoRemoteError{node_id: *node_id}) }
 
-	pub fn parse_action(&mut self, action: &NodeAction, outgoing: &mut Vec<InternetPacket>) -> Result<bool, ActionError> {
+	pub fn parse_action(&mut self, action: &NodeAction, outgoing: &mut Vec<InternetPacket>) -> Result<bool, NodeError> {
 		match action.clone() {
 			// Connect to remote node
 			NodeAction::Connect(remote_node_id, remote_net_id, packets) => {
@@ -326,7 +316,7 @@ impl Node {
 				let distance = self.remote_mut(&return_node_id)?.session_mut()?.tracker.acknowledge_ping(ping_id, self_ticks)?;
 				self.route_map.add_edge(self.node_id, return_node_id, distance);
 			},
-			NodePacket::ExchangeInfo(remote_route_coord, remote_peer_count, remote_ping) => {
+			NodePacket::ExchangeInfo(remote_route_coord, _remote_peer_count, remote_ping) => {
 				// Note dual-edge
 				self.route_map.add_edge(return_node_id, self.node_id, remote_ping);
 
@@ -399,12 +389,18 @@ impl Node {
 			},
 			// Initiate Direct Handshakes with people who want pings
 			NodePacket::WantPing(requesting_node_id, requesting_net_id) => {
-				if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
+				// Only send WantPing if this node is usedful
+				if self.node_id == requesting_node_id || self.route_coord.is_none() { return Ok(()) }
 				let distance_self_to_return = self.remote(&return_node_id)?.session()?.tracker.dist_avg;
-				if self.node_id != requesting_node_id && self.route_coord.is_some() {
-					// Connect to requested node
-					self.action(NodeAction::Connect(requesting_node_id, requesting_net_id, vec![NodePacket::AcceptWantPing(return_node_id, distance_self_to_return)]));
-				} else { log::warn!("Node({}) received own WantPing", self.node_id); }
+
+				let request_remote = self.remotes.entry(requesting_node_id).or_insert(RemoteNode::new(requesting_node_id));
+				if let Ok(_request_session) = request_remote.session() { // If session, ignore probably
+					return Ok(())
+				} else { // If no session, send request
+					if request_remote.handshake_pending.is_none() {
+						self.action(NodeAction::Connect(requesting_node_id, requesting_net_id, vec![NodePacket::AcceptWantPing(return_node_id, distance_self_to_return)]));
+					}
+				}
 			},
 			NodePacket::AcceptWantPing(intermediate_node_id, return_to_intermediate_distance) => {
 				self.route_map.add_edge(return_node_id, intermediate_node_id, return_to_intermediate_distance);
@@ -413,10 +409,7 @@ impl Node {
 				let self_route_coord = self.route_coord;
 				let self_node_count = self.node_list.len();
 				let remote = self.remote(&return_node_id)?;
-				//self.action(NodeAction::MaybeTestNode(return_node_id));
 				remote.add_packet(NodePacket::ExchangeInfo(self_route_coord, self_node_count, remote.session()?.tracker.dist_avg), outgoing)?;
-				//self.action(NodeAction::TryCalcRouteCoord);
-				
 			},
 			// Receive notification that another node has found me it's closest
 			NodePacket::PeerNotify(rank) => {
@@ -491,7 +484,7 @@ impl Node {
 				} else { Err(RemoteNodeError::NoPendingHandshake)? }
 			},
 			NodeEncryption::Session { session_id, packet } => {
-				let return_node_id = self.sessions.get(&session_id).ok_or(NodeError::UnknownSession {session_id} )?;
+				let return_node_id = self.sessions.get_by_left(&session_id).ok_or(NodeError::UnknownSession {session_id} )?;
 				Some((*return_node_id, packet))
 			},
 		})
@@ -506,18 +499,24 @@ impl Node {
 		}).collect::<Vec<NodePacket>>())
 	}
 	fn calculate_route_coord(&mut self) -> Result<RouteCoord, NodeError> {
-		// TODO: Refactor this implementation of multidimensional scaling
-		println!("node_list: {:?}", self.remotes.iter().map(|(&id,n)|(id,n.route_coord)).collect::<Vec<(NodeID,Option<RouteCoord>)>>() );
+		//self.route_coord = ;
+		return self.deux_ex_data.ok_or(NodeError::Other(anyhow!("no deus ex machina data")));
+
+		/* // TODO: Refactor this implementation of multidimensional scaling
+		// println!("node_list: {:?}", self.remotes.iter().map(|(&id,n)|(id,n.route_coord)).collect::<Vec<(NodeID,Option<RouteCoord>)>>() );
 		let nodes: Vec<(NodeID, RouteCoord)> = self.node_list.iter().filter_map(|(_,&node_id)|self.remote(&node_id).ok().map(|node|node.route_coord.map(|s|(node_id,s))).flatten()).collect();
 		let mat_size = nodes.len() + 1;
 		
-		println!("filtered_node_list: {:?}", nodes);
+		/* println!("filtered_node_list: {:?}", nodes); */
 		let mut proximity_matrix = DMatrix::from_element(mat_size, mat_size, 0f64);
 		
 		// This is inefficient b.c. multiple vector creation but whatever
-		let (mut first_row_insert, node_id_index): (Vec<u64>, Vec<NodeID>) = self.route_map.edges(self.node_id).map(|(_,n,&e)|(e,n)).unzip();
+		let (mut first_row_insert, node_id_index): (Vec<u64>, Vec<NodeID>) = self.route_map.edges(self.node_id).filter_map(|(_,n,&e)|(e!=0).then(||(e,n))).unzip();
 		first_row_insert.insert(0, 0);
 
+		/* println!("first_row_insert: {:?}", first_row_insert);
+		println!("node: {:?}", self);
+		println!("route_map: {:#?}", self.route_map); */
 		// Fill first row and collumn
 		first_row_insert.iter().enumerate().for_each(|(i,&w)| {
 			proximity_matrix[(0,i)] = w as f64;
@@ -534,7 +533,7 @@ impl Node {
 				proximity_matrix[(i_x+1, i_y+1)] = dist;
 			});
 		});
-		//println!("Proximity Matrix: {}", proximity_matrix);
+		println!("Proximity Matrix: {}", proximity_matrix);
 		// Algorithm for Multidimensional Scaling (MDS) Adapted from: http://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.495.4629&rep=rep1&type=pdf
 		let proximity_squared = proximity_matrix.component_mul(&proximity_matrix); 
 		
@@ -550,8 +549,13 @@ impl Node {
 
 		let top_eigenvalues = nalgebra::Matrix2::new(max_eigenvalue.1.abs().sqrt(), 0., 0., second_max_eigenvalue.1.abs().sqrt()); // Eigenvalue matrix
 		let top_eigenvectors = DMatrix::from_fn(mat_size, 2, |r,c| if c==0 { eigen.eigenvectors[(r,max_eigenvalue.0)] } else { eigen.eigenvectors[(r,second_max_eigenvalue.0)] });
-		let x_matrix = top_eigenvectors.clone() * top_eigenvalues; // Output, index 0 needs to be mapped to virtual routecoord coordinates based on other indices
-		
+		let mut x_matrix = top_eigenvectors.clone() * top_eigenvalues; // Output, index 0 needs to be mapped to virtual routecoord coordinates based on other indices
+		log::trace!("NodeID({}) x_matrix prediction = {}", self.node_id, x_matrix);
+		/* if mat_size == 3 {
+			x_matrix.row_iter_mut().for_each(|mut r|r[1] = -r[1]);
+		}
+		log::trace!("NodeID({}) x_matrix prediction flip = {}", self.node_id, x_matrix); */
+
 		// Map MDS output to 2 RouteCoordinates
 		// TODO: Refactor this messy code
 		let v1_routecoord = self.remote(&node_id_index[0])?.route_coord.unwrap();
@@ -563,6 +567,7 @@ impl Node {
 		//println!("x1: {}", x1);
 		//println!("v1: {}, v2: {}", v1, v2);
 		let x_shift = v1 - x1;
+		println!("x_shift: {}", x_shift);
 		let x1s = x1 + x_shift;
 		let x2s = x_matrix.row(2).clone_owned().reshape_generic(U2,U1) + x_shift;
 		let x3s = x_matrix.row(0).clone_owned().reshape_generic(U2,U1) + x_shift;
@@ -574,11 +579,14 @@ impl Node {
 		let sin_a = (vd[1] - vd[0]) / (2. * xd[1]);
 		//println!("cos_a: {}, sin_a: {}", cos_a, sin_a);
 		let a = f64::atan2(sin_a, cos_a);
+		log::debug!("a = {}", a.to_degrees());
 		
 		use nalgebra::Matrix2;
 		let rot = Matrix2::new(a.cos(), -a.sin(), a.sin(), a.cos());
+		println!("matrix layout: {}", Matrix2::new(0,1,2,3));
 		let v3_g = rot * x3s;
-
-		Ok((v3_g[0] as i64, v3_g[1] as i64))
+		
+		log::info!("RouteCoord generated: {}", v3_g);
+		Ok((v3_g[0] as i64, v3_g[1] as i64)) */
 	}
 }
