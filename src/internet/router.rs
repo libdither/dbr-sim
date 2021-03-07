@@ -32,7 +32,7 @@ impl RouterNode {
 	}
 	fn generate(&mut self, other_uuid: InternetID, other_position: Point2<f32>, rng: &mut impl Rng) -> isize {
 		let dist = *self.distance_cache.entry(other_uuid).or_insert(nalgebra::distance(&self.position, &other_position) as isize);
-		(dist as isize + rng.gen_range( -self.variance..self.variance))
+		dist as isize + rng.gen_range(-self.variance..self.variance)
 	}
 }
 

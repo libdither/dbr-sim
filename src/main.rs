@@ -33,7 +33,7 @@ fn main() {
 	}
 
 	for i in 1..(internet.nodes.len()+0) {
-		if let Some(node) = internet.node_mut(i) {
+		if let Some(node) = internet.node_mut(i as InternetID) {
 			node.action(NodeAction::Bootstrap(0,0));
 		} else { log::error!("Node at InternetID({}) doesn't exist", i)}
 		for _j in 0..30 {
@@ -88,7 +88,7 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>, rng: &mut 
 			println!("{:#?}", internet);
 		},
 		Some(&"graph") => {
-			plot::default_graph(internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (600,600));
+			plot::default_graph(internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (1280,720))?;
 			//internet.gen_routing_plot("target/images/network_snapshot.png", (500, 500))?;
 		},
 		// List nodes

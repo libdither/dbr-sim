@@ -24,10 +24,12 @@ pub fn default_graph<GI: GraphPlottable>(item: &GI, render_range: &(Range<i32>, 
 	// Set background color
 	root.fill(&DEFAULT_BACKGROUND)?;
 	// Make sure it uses correct graph layout with 4 quadrants
+	let logic_x = -(render_range.0.end as f32)..(render_range.0.end as f32);
+	let logic_y = (render_range.1.end as f32)..-(render_range.1.end as f32);
 	let root = root.apply_coord_spec(Cartesian2d::<RangedCoordf32, RangedCoordf32>::new(
-		-1f32..1f32,
-		1f32..-1f32,
-		render_range.clone(),
+		logic_x,
+		logic_y,
+		(0..image_dimensions.0 as i32, 0..image_dimensions.1 as i32),
 	));
 
 	// Draw Connections
@@ -46,18 +48,19 @@ pub fn default_graph<GI: GraphPlottable>(item: &GI, render_range: &(Range<i32>, 
 			root.draw(&PathElement::new([to_tuple(offset_node_coord), to_tuple(offset_remote_coord)], ShapeStyle::from(edge.weight())))?;
 		}
 	}
-
+	
 	// Draw Nodes
 	use plotters::style::text_anchor::{Pos, HPos, VPos};
 	for node in graph_data.raw_nodes() {
 		let (label, position) = &node.weight;
 		let position = (position[0] as f32, position[1] as f32);
+		
 		root.draw(&(EmptyElement::at(position) // Outer object
-			+ Circle::new((0, 0), 10, ShapeStyle::from(&BLACK).filled()) // Draw Circle
+			+ Circle::new((0, 0), 20, ShapeStyle::from(&BLACK).filled()) // Draw Circle
 			+ Text::new( // Draw Text
 				label.clone(),
 				(0, 0),
-				("sans-serif", 15.0).into_font().color(&WHITE).pos(Pos::new(HPos::Center, VPos::Center)),
+				("sans-serif", 30.0).into_font().color(&WHITE).pos(Pos::new(HPos::Center, VPos::Center)),
 			))
 		)?;
 	}

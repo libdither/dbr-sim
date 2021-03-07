@@ -14,9 +14,9 @@ use router::InternetRouter;
 
 use crate::node::{Node, NodeID, RouteCoord};
 
-pub const FIELD_DIMENSIONS: (Range<i32>, Range<i32>) = (0..640, 0..360);
+pub const FIELD_DIMENSIONS: (Range<i32>, Range<i32>) = (-320..320, -130..130);
 
-pub type InternetID = usize;
+pub type InternetID = u128;
 
 #[derive(Debug)]
 pub enum InternetRequest {
@@ -57,11 +57,11 @@ impl<CN: CustomNode> InternetSim<CN> {
 			route_coord_dht: HashMap::new(),
 		}
 	}
-	pub fn lease(&self) -> InternetID { self.nodes.len() }
+	pub fn lease(&self) -> InternetID { self.nodes.len() as InternetID }
 	pub fn add_node(&mut self, node: CN) { self.nodes.insert(node.net_id(), node); } 
 	pub fn del_node(&mut self, net_id: InternetID) { self.nodes.remove(&net_id); }
-	pub fn node_mut(&mut self, node_id: InternetID) -> Option<&mut CN> { self.nodes.get_mut(&node_id) }
-	pub fn node(&self, node_id: InternetID) -> Option<&CN> { self.nodes.get(&node_id) }
+	pub fn node_mut(&mut self, net_id: InternetID) -> Option<&mut CN> { self.nodes.get_mut(&net_id) }
+	pub fn node(&self, net_id: InternetID) -> Option<&CN> { self.nodes.get(&net_id) }
 	pub fn tick(&mut self, ticks: usize, rng: &mut impl Rng) {
 		//let packets_tmp = Vec::new();
 		for _ in 0..ticks {
@@ -104,20 +104,35 @@ impl GraphPlottable for InternetSim<Node> {
 		/* for (idx, node) in &self.nodes {
 
 		} */
-		/* use petgraph::data::FromElements;
-		let nodes: Vec<String, Point2<i32>> = self.router.node_map.iter().map(|(&net_id, lc)|{
-			(
-				net_id.to_string(),
-				lc.position.cast(),
-			)
+		use petgraph::data::{FromElements, Element};
+		let nodes: Vec<Element<(String, Point2<i32>),RGBColor>> = self.router.node_map.iter().map(|(&net_id, lc)|{
+			Element::Node {
+				weight: (
+					net_id.to_string(),
+					lc.position.map(|i|i as i32),
+				)
+			}
 		}).collect();
-		println!("nodes: {:?}", nodes); */
 
-		//let edge_array = self.nodes
+		let node_idx_map = &self.nodes.iter().enumerate().map(|(idx,(&id,_))|(id,idx)).collect::<HashMap<InternetID,usize>>();
 
-		//let node_graph: Graph<(String, nalgebra::Point2<f32>), RGBColor> = .from_elements();
-		//let plot_edge_iter = self.nodes.iter().filter_map(|(&id, n)|node.as_any().downcast_ref::<crate::node::Node>());
-		//graph
-		Graph::with_capacity(0, 0)
+		let edges = self.nodes.iter().enumerate().map(|(_, (net_id, node))|{
+			let src_index = node_idx_map[net_id];
+			node.node_list.iter().filter_map(move |(_,&remote_id)|{
+				// Get Net ID and set color based on peerage
+				node.remotes[&remote_id].session().map(|s|{
+					(s.return_net_id, if s.is_peer() {RGBColor(0,0,0)} else {RGBColor(255,255,255)})
+				}).ok()
+
+			}).map(move |(remote_net_id, color)|{
+				Element::Edge {
+					source: src_index.clone(),
+					target: node_idx_map[&remote_net_id],
+					weight: color,
+				}
+			})
+		}).flatten();
+		let graph = Graph::from_elements(nodes.into_iter().chain(edges));
+		graph
 	}
 }
