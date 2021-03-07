@@ -1,4 +1,4 @@
-#[allow(unused_variables)]
+#[allow(unused_imports)]
 
 const TARGET_PEER_COUNT: usize = 5;
 // Amount of time to wait to connect to a peer who wants to ping
@@ -13,6 +13,7 @@ use petgraph::graphmap::DiGraphMap;
 use bimap::BiHashMap;
 
 pub use crate::internet::{CustomNode, InternetID, InternetPacket};
+use crate::plot::GraphPlottable;
 
 mod types;
 mod session;
@@ -341,7 +342,7 @@ impl Node {
 
 				let ping = remote.session()?.tracker.dist_avg;
 				if remote_peer_count <= 1 && remote_route_coord.is_none() {
-					remote.add_packet(NodePacket::ProposeRouteCoords((0,0), (0,ping as i64)), outgoing)?;
+					remote.add_packet(NodePacket::ProposeRouteCoords(Point2::new(0,0), Point2::new(0,ping as i64)), outgoing)?;
 				} else {
 					
 					// If not at target, it is small network, attempt to calculate
@@ -588,5 +589,25 @@ impl Node {
 		
 		log::info!("RouteCoord generated: {}", v3_g);
 		Ok((v3_g[0] as i64, v3_g[1] as i64)) */
+	}
+}
+
+use plotters::style::RGBColor;
+use petgraph::Graph;
+use nalgebra::Point2;
+impl GraphPlottable for Node {
+	fn gen_graph(&self) -> Graph<(String, Point2<i32>), RGBColor> {
+		for node in self.route_map.nodes() {
+
+
+		}
+		/* let node_index self.node_list.iter().map(|(_, id)|self.remotes[id].)
+		self.route_map.clone().into_graph().filter_map(|idx, node_id|{
+			let remote = self.remote(&id).ok();
+			remote.map(|r|r.route_coord.map(|c|(id, c)))
+		}, |idx, _|{
+			
+		}) */
+		Graph::with_capacity(0, 0)
 	}
 }

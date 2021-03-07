@@ -4,6 +4,7 @@ pub use crate::node::session::{RemoteSession, SessionError, SessionType};
 use crate::node::session::PingID;
 
 use thiserror::Error;
+use nalgebra::Point2;
 
 /// Hash uniquely identifying a node (represents the Multihash of the node's Public Key)
 pub type NodeID = u32;
@@ -11,7 +12,7 @@ pub type NodeID = u32;
 pub type SessionID = u32;
 /// Coordinate that represents a position of a node relative to other nodes in 2D space.
 pub type RouteScalar = u64;
-pub type RouteCoord = (i64, i64);
+pub type RouteCoord = Point2<i64>;
 
 /// Packets that are sent between nodes in this protocol.
 #[derive(Serialize, Deserialize, Debug, Clone)]

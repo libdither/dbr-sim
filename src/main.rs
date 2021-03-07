@@ -16,6 +16,7 @@ pub mod internet;
 use internet::{InternetID, InternetSim, CustomNode};
 pub mod node;
 use node::{Node, NodeAction, NodeID, NodeActionCondition};
+pub mod plot;
 use rand::SeedableRng;
 
 fn main() {
@@ -26,7 +27,7 @@ fn main() {
 	let rng = &mut rand::rngs::SmallRng::seed_from_u64(0);
 	let mut internet = InternetSim::new();
 
-	for i in 0..40 {
+	for i in 0..10 {
 		let node2 = Node::new(i, internet.lease());
 		internet.add_node(node2);
 	}
@@ -87,14 +88,15 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>, rng: &mut 
 			println!("{:#?}", internet);
 		},
 		Some(&"graph") => {
-			internet.gen_routing_plot("target/images/network_snapshot.png", (500, 500))?;
+			plot::default_graph(internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (600,600));
+			//internet.gen_routing_plot("target/images/network_snapshot.png", (500, 500))?;
 		},
 		// List nodes
 		Some(&"list") => {
 			if let Some(subcommand) = command.next() {
 				match *subcommand {
 					"peered" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.node_list)),
-					"router" => internet.router.speed_map.iter().for_each(|(net_id,lc)| println!("{}: {:?}", net_id, lc)),
+					"router" => internet.router.node_map.iter().for_each(|(net_id,lc)| println!("{}: {:?}", net_id, lc)),
 					"routes" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.route_coord)),
 					"node" => {
 						if let Some(node_id) = command.next().map(|s|s.parse::<InternetID>().ok()).flatten() {

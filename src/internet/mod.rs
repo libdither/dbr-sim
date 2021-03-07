@@ -1,17 +1,20 @@
-#![allow(dead_code)]
+//#![allow(dead_code)]
+
+use std::{collections::HashMap, fmt::Debug};
+use std::any::Any;
+use std::ops::Range;
+
+use rand::Rng;
+use petgraph::Graph;
+use nalgebra::Point2;
+use plotters::style::RGBColor;
 
 mod router;
 use router::InternetRouter;
 
-use std::{collections::HashMap, fmt::Debug};
-use std::any::Any;
+use crate::node::{Node, NodeID, RouteCoord};
 
-use plotters::prelude::*;
-use plotters::coord::types::RangedCoordf32;
-use nalgebra::Vector2;
-use rand::Rng;
-
-use crate::node::{NodeID, RouteCoord};
+pub const FIELD_DIMENSIONS: (Range<i32>, Range<i32>) = (0..640, 0..360);
 
 pub type InternetID = usize;
 
@@ -50,7 +53,7 @@ impl<CN: CustomNode> InternetSim<CN> {
 	pub fn new() -> InternetSim<CN> {
 		InternetSim {
 			nodes: HashMap::new(),
-			router: Default::default(),
+			router: InternetRouter::new(FIELD_DIMENSIONS),
 			route_coord_dht: HashMap::new(),
 		}
 	}
@@ -82,63 +85,39 @@ impl<CN: CustomNode> InternetSim<CN> {
 							packet.request = Some(InternetRequest::RouteCoordDHTResponse( old_route.map(|r|(node_id, r) )));
 						}
 						_ => {},
-					}
+					} 
 				}
 				// Send packets through the router
 				self.router.add_packets(outgoing_packets, rng);
-				if let Some(lc) = self.router.speed_map.get(&node_net_id) { node.set_deus_ex_data( Some((lc.position.0 as i64, lc.position.1 as i64)) ) }
+				if let Some(rn) = self.router.node_map.get(&node_net_id) {
+					let cheat_coord = rn.position.clone().map(|s|s.floor() as i64);
+					node.set_deus_ex_data( Some(cheat_coord) ) }
 			}
 		}
 	}
-	pub fn gen_routing_plot(&self, path: &str, dimensions: (u32, u32)) -> Result<(), Box<dyn std::error::Error>> {
-		let root = BitMapBackend::new(path, dimensions).into_drawing_area();
+}
 
-		root.fill(&RGBColor(200,200,200))?;
+use crate::plot::GraphPlottable;
+impl GraphPlottable for InternetSim<Node> {
+	fn gen_graph(&self) -> Graph<(String, Point2<i32>), RGBColor> {
+		//let root = BitMapBackend::new(path, dimensions).into_drawing_area();
+		/* for (idx, node) in &self.nodes {
 
-		// Make sure it uses correct graph layout with 4 quadrants
-		let root = root.apply_coord_spec(Cartesian2d::<RangedCoordf32, RangedCoordf32>::new(
-			-1f32..1f32,
-			1f32..-1f32,
-			(0..dimensions.0 as i32, 0..dimensions.1 as i32),
-		));
-		use plotters::style::text_anchor::{Pos, HPos, VPos};
-		let dot_and_label = |x: f32, y: f32, label: &str| {
-			return EmptyElement::at((x, y))
-				+ Circle::new((0, 0), 10, ShapeStyle::from(&BLACK).filled())
-				+ Text::new(
-					format!("{}", label),
-					(0, 0),
-					("sans-serif", 15.0).into_font().color(&WHITE).pos(Pos::new(HPos::Center, VPos::Center)),
-				);
-		};
+		} */
+		/* use petgraph::data::FromElements;
+		let nodes: Vec<String, Point2<i32>> = self.router.node_map.iter().map(|(&net_id, lc)|{
+			(
+				net_id.to_string(),
+				lc.position.cast(),
+			)
+		}).collect();
+		println!("nodes: {:?}", nodes); */
 
-		let convert_coords = |position: (i32, i32)| {
-			Vector2::new(position.0 as f32 / (router::AREA / 2) as f32, position.1 as f32 / (router::AREA / 2) as f32)
-		};
+		//let edge_array = self.nodes
 
-		for (net_id, node) in &self.nodes {
-			let node = node.as_any().downcast_ref::<crate::node::Node>().unwrap();
-			if node.node_list.len() > 0 {
-				let node_coord = convert_coords(self.router.speed_map.get(net_id).ok_or("failed to index speed map")?.position);
-				for (index, (_, node_id)) in node.node_list.iter().enumerate() {
-					let remote_session = node.remote(node_id)?.session()?;
-					let remote_net_id = remote_session.return_net_id;
-					let remote_coord = convert_coords(self.router.speed_map[&remote_net_id].position);
-					let color = if index < 3 { &BLACK } else { &RGBColor(255, 255, 255) };
-					
-					// offset connections so both directions show side by side
-					let offset = (nalgebra::Rotation2::new(std::f32::consts::FRAC_PI_2) * (node_coord - remote_coord)).normalize();
-					let offset_node_coord = node_coord + (offset * 0.01);
-					let offset_remote_coord = remote_coord + (offset * 0.01);
-					root.draw(&PathElement::new([(offset_node_coord.x, offset_node_coord.y), (offset_remote_coord.x, offset_remote_coord.y)], ShapeStyle::from(color)))?;
-				}
-			}
-		}
-
-		for (net_id, lc) in self.router.speed_map.iter() {
-			let vec = convert_coords(lc.position);
-			root.draw(&dot_and_label(vec.x, vec.y, &net_id.to_string()))?;
-		}
-		Ok(())
+		//let node_graph: Graph<(String, nalgebra::Point2<f32>), RGBColor> = .from_elements();
+		//let plot_edge_iter = self.nodes.iter().filter_map(|(&id, n)|node.as_any().downcast_ref::<crate::node::Node>());
+		//graph
+		Graph::with_capacity(0, 0)
 	}
 }
