@@ -8,17 +8,16 @@ const MAX_REQUEST_PINGS: usize = 10;
 use std::collections::{HashMap, BTreeMap};
 use std::any::Any;
 
-use nalgebra::{DMatrix, SymmetricEigen, Vector2};
+//use nalgebra::{DMatrix, SymmetricEigen, Vector2};
 use petgraph::graphmap::DiGraphMap;
 use bimap::BiHashMap;
-
-pub use crate::internet::{CustomNode, InternetID, InternetPacket};
-use crate::plot::GraphPlottable;
 
 mod types;
 mod session;
 pub use types::{NodeID, SessionID, RouteCoord, NodePacket, NodeEncryption, RemoteNode, RemoteNodeError, RouteScalar};
 use session::{SessionError, RemoteSession};
+pub use crate::internet::{CustomNode, InternetID, InternetPacket, PacketVec};
+use crate::plot::GraphPlottable;
 
 #[derive(Debug, Clone)]
 /// A condition that should be satisfied before an action is executed
@@ -111,8 +110,8 @@ pub struct Node {
 impl CustomNode for Node {
 	type CustomNodeAction = NodeAction;
 	fn net_id(&self) -> InternetID { self.net_id }
-	fn tick(&mut self, incoming: Vec<InternetPacket>) -> Vec<InternetPacket> {
-		let mut outgoing: Vec<InternetPacket> = Vec::new();
+	fn tick(&mut self, incoming: PacketVec) -> PacketVec {
+		let mut outgoing = PacketVec::new();
 
 		// Parse Incoming Packets
 		for packet in incoming {
@@ -196,7 +195,7 @@ impl Node {
 	pub fn remote(&self, node_id: &NodeID) -> Result<&RemoteNode, NodeError> { self.remotes.get(node_id).ok_or(NodeError::NoRemoteError{node_id: *node_id}) }
 	pub fn remote_mut(&mut self, node_id: &NodeID) -> Result<&mut RemoteNode, NodeError> { self.remotes.get_mut(node_id).ok_or(NodeError::NoRemoteError{node_id: *node_id}) }
 
-	pub fn parse_action(&mut self, action: &NodeAction, outgoing: &mut Vec<InternetPacket>) -> Result<bool, NodeError> {
+	pub fn parse_action(&mut self, action: &NodeAction, outgoing: &mut PacketVec) -> Result<bool, NodeError> {
 		match action.clone() {
 			// Connect to remote node
 			NodeAction::Connect(remote_node_id, remote_net_id, packets) => {
@@ -294,7 +293,7 @@ impl Node {
 		}
 		Ok(true)
 	}
-	pub fn parse_node_packet(&mut self, return_node_id: NodeID, received_packet: NodePacket, outgoing: &mut Vec<InternetPacket>) -> Result<(), NodeError> {
+	pub fn parse_node_packet(&mut self, return_node_id: NodeID, received_packet: NodePacket, outgoing: &mut PacketVec) -> Result<(), NodeError> {
 		log::debug!("[{: >4}] Node({}) received NodePacket::{:?} from NodeID({})", self.ticks, self.node_id, received_packet, return_node_id);
 		//let return_remote = self.remote_mut(&return_node_id)?;
 		let self_ticks = self.ticks;
@@ -427,7 +426,7 @@ impl Node {
 	}
 
 	/// Initiate handshake process and send packets when completed
-	fn direct_connect(&mut self, dest_node_id: NodeID, dest_addr: InternetID, packets: Vec<NodePacket>, outgoing: &mut Vec<InternetPacket>) {
+	fn direct_connect(&mut self, dest_node_id: NodeID, dest_addr: InternetID, packets: Vec<NodePacket>, outgoing: &mut PacketVec) {
 		let session_id: SessionID = rand::random(); // Create random session ID
 		//let self_node_id = self.node_id;
 		let self_ticks = self.ticks;
@@ -438,7 +437,7 @@ impl Node {
 		outgoing.push(encryption.package(dest_addr))
 	}
 	/// Parses handshakes, acknowledgments and sessions, Returns Some(remote_net_id, packet_to_parse) if session or handshake finished
-	fn parse_packet(&mut self, received_packet: InternetPacket, outgoing: &mut Vec<InternetPacket>) -> Result<Option<(NodeID, NodePacket)>, NodeError> {
+	fn parse_packet(&mut self, received_packet: InternetPacket, outgoing: &mut PacketVec) -> Result<Option<(NodeID, NodePacket)>, NodeError> {
 		if received_packet.dest_addr != self.net_id { return Err(NodeError::InvalidNetworkRecipient { from: received_packet.src_addr, intended_dest: received_packet.dest_addr }) }
 
 		let return_net_id = received_packet.src_addr;
@@ -597,7 +596,7 @@ use petgraph::Graph;
 use nalgebra::Point2;
 impl GraphPlottable for Node {
 	fn gen_graph(&self) -> Graph<(String, Point2<i32>), RGBColor> {
-		for node in self.route_map.nodes() {
+		for _node in self.route_map.nodes() {
 
 
 		}

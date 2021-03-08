@@ -1,4 +1,4 @@
-use crate::internet::{InternetID, InternetPacket};
+use crate::internet::{InternetID, InternetPacket, PacketVec};
 
 pub use crate::node::session::{RemoteSession, SessionError, SessionType};
 use crate::node::session::PingID;
@@ -119,7 +119,7 @@ impl RemoteNode {
 		self.session.as_mut().ok_or( RemoteNodeError::NoSessionError { node_id: self.node_id } )
 	}
 	/// Wrap packet and push to `outgoing` Vec
-	pub fn add_packet(&self, packet: NodePacket, outgoing: &mut Vec<InternetPacket>) -> Result<(), RemoteNodeError> {
+	pub fn add_packet(&self, packet: NodePacket, outgoing: &mut PacketVec) -> Result<(), RemoteNodeError> {
 		Ok(outgoing.push(self.session()?.gen_packet(packet)?))
 	}
 }

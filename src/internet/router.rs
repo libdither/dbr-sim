@@ -1,12 +1,12 @@
 
 use std::collections::HashMap;
+use std::ops::Range;
 
-use crate::internet::{InternetID, InternetPacket};
+use crate::internet::{InternetID, InternetPacket, PacketVec};
 
 const VARIANCE: isize = 2;
 use nalgebra::Point2;
 use rand::Rng;
-use std::ops::Range;
 
 /* // Network Sim structuring calculators
 pub trait LatencyCalculator: Default {
@@ -53,7 +53,7 @@ impl InternetRouter {
 			packet_map: Default::default(),
 		}
 	}
-	pub fn add_packets(&mut self, packets: Vec<InternetPacket>, rng: &mut impl Rng) {
+	pub fn add_packets(&mut self, packets: PacketVec, rng: &mut impl Rng) {
 		for packet in packets {
 			let dest = self.node_map.entry(packet.dest_addr).or_insert(RouterNode::random(packet.dest_addr, &self.field_dimensions, rng));
 			let (dest_uuid, dest_position) = (dest.uuid, dest.position);
@@ -71,13 +71,13 @@ impl InternetRouter {
 			}
 		}
 	}
-	pub fn tick_node(&mut self, destination: InternetID) -> Vec<InternetPacket> {
+	pub fn tick_node(&mut self, destination: InternetID) -> PacketVec {
 		if let Some(packets) = self.packet_map.get_mut(&destination) {
 			packets.iter_mut().for_each(|item| item.1 -= 1); // Decrement ticks
 
 			packets.drain_filter(|x| x.1 <= 0).map(|x| x.0).collect()
 		} else {
-			return Vec::new();
+			return PacketVec::new();
 		}
 	}
 }

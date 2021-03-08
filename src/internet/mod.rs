@@ -8,6 +8,7 @@ use rand::Rng;
 use petgraph::Graph;
 use nalgebra::Point2;
 use plotters::style::RGBColor;
+use smallvec::SmallVec;
 
 mod router;
 use router::InternetRouter;
@@ -17,6 +18,7 @@ use crate::node::{Node, NodeID, RouteCoord};
 pub const FIELD_DIMENSIONS: (Range<i32>, Range<i32>) = (-320..320, -130..130);
 
 pub type InternetID = u128;
+pub type PacketVec = SmallVec<[InternetPacket; 8]>;
 
 #[derive(Debug)]
 pub enum InternetRequest {
@@ -37,7 +39,7 @@ impl InternetPacket { pub fn gen_request(dest_addr: InternetID, request: Interne
 pub trait CustomNode: std::fmt::Debug {
 	type CustomNodeAction;
 	fn net_id(&self) -> InternetID;
-	fn tick(&mut self, incoming: Vec<InternetPacket>) -> Vec<InternetPacket>;
+	fn tick(&mut self, incoming: PacketVec) -> PacketVec;
 	fn action(&mut self, action: Self::CustomNodeAction);
 	fn as_any(&self) -> &dyn Any;
 	fn set_deus_ex_data(&mut self, data: Option<RouteCoord>);
@@ -114,10 +116,9 @@ impl GraphPlottable for InternetSim<Node> {
 			}
 		}).collect();
 
-		let node_idx_map = &self.nodes.iter().enumerate().map(|(idx,(&id,_))|(id,idx)).collect::<HashMap<InternetID,usize>>();
+		let node_idx_map = &self.router.node_map.iter().enumerate().map(|(idx,(&id,_))|(id,idx)).collect::<HashMap<InternetID,usize>>();
 
 		let edges = self.nodes.iter().enumerate().map(|(_, (net_id, node))|{
-			let src_index = node_idx_map[net_id];
 			node.node_list.iter().filter_map(move |(_,&remote_id)|{
 				// Get Net ID and set color based on peerage
 				node.remotes[&remote_id].session().map(|s|{
@@ -126,7 +127,7 @@ impl GraphPlottable for InternetSim<Node> {
 
 			}).map(move |(remote_net_id, color)|{
 				Element::Edge {
-					source: src_index.clone(),
+					source: node_idx_map[&net_id],
 					target: node_idx_map[&remote_net_id],
 					weight: color,
 				}
