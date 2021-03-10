@@ -7,7 +7,8 @@ use thiserror::Error;
 use priority_queue::PriorityQueue;
 
 use crate::internet::{InternetID, InternetPacket};
-use crate::node::{SessionID, NodeID, RouteScalar, RouteCoord, NodePacket, types::NUM_NODE_PACKETS};
+use crate::node::{SessionID, NodeID, RouteScalar, RouteCoord, NodePacket};
+use crate::node::types::NUM_NODE_PACKETS;
 
 /// Number that uniquely identifies a ping request so that multiple Pings may be sent at the same time
 pub type PingID = u64;

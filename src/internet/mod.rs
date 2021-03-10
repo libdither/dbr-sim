@@ -122,7 +122,8 @@ impl GraphPlottable for InternetSim<Node> {
 			node.node_list.iter().filter_map(move |(_,&remote_id)|{
 				// Get Net ID and set color based on peerage
 				node.remotes[&remote_id].session().map(|s|{
-					(s.return_net_id, if s.is_peer() {RGBColor(0,0,0)} else {RGBColor(255,255,255)})
+					let color = if node.peer_list.contains_left(&remote_id) { RGBColor(0,0,0) } else { RGBColor(255,255,255) };
+					(s.return_net_id, color)
 				}).ok()
 
 			}).map(move |(remote_net_id, color)|{

@@ -23,24 +23,21 @@ pub enum NodePacket {
 	/// Send multiple packets simultaneously
 	Multiple(Vec<NodePacket>),
 
-	/// Request 
-	RequestRouteCoord,
-	// Return routecoord
-	RouteCoord(Option<RouteCoord>),
-
+	/// Information Exchange System
+	/// Send info to another peer in exchange for their info
+	ExchangeInfo(Option<RouteCoord>, usize, u64), // My Route coordinate, number of peers, remote ping
+	ExchangeInfoResponse(Option<RouteCoord>, usize, u64),
+	
 	/// Sent to other Nodes. Expects PingResponse returned
 	Ping(PingID), // Random number uniquely identifying this ping request
 	/// PingResponse packet, time between Ping and PingResponse is measured
 	PingResponse(PingID), // Acknowledge Ping(u64), sends back originally sent number
 
-	/// Send info to another peer in exchange for their info
-	ExchangeInfo(Option<RouteCoord>, usize, u64), // My Route coordinate, number of peers, remote ping
-	ExchangeInfoResponse(Option<RouteCoord>, usize, u64),
-	
 	/// Propose routing coordinates if nobody has any nodes
 	ProposeRouteCoords(RouteCoord, RouteCoord), // First route coord = other node, second route coord = myself
 	ProposeRouteCoordsResponse(RouteCoord, RouteCoord, bool), // Proposed route coords (original coordinates, orientation), bool = true if acceptable
 
+	/// Self-Organization System
 	/// Request to a peer for them to request their peers to ping me
 	RequestPings(usize), // usize: max number of pings
 
@@ -55,25 +52,24 @@ pub enum NodePacket {
 	/// * `usize`: Rank of how close peer is compared to other nodes, usize::MAX signifies no longer consider node
 	PeerNotify(usize),
 
-	/// Sent when node has a new peer that it thinks another node should connect to, prompts a Bootstrap request from other node
-	/// * `NodeID`: NodeID of new node who connected as a direct peer
-	// NewPeersHint(NodeID),
-
-
+	/// Packet Traversal
 	/// Represents a network traversal packet, It is routed through the network via it's RouteCoord
-	/// Vec<u8>: Represents encrypted data meant for a specific node
-	Traverse(RouteCoord, Vec<u8>),
+	Traverse(RouteCoord, Box<NodeEncryption>),
 
-	/// Request to establish a peer as an intermediate node
+	/// Request a session that is routed through node to another RouteCoordinate
+	RoutedSessionRequest(RouteCoord),
+	RoutedSessionAccept(),
+
+	/* /// Request to establish a peer as an intermediate node
 	/// RouteCoord: Area where intermediate node is requested
 	/// u64: Radius of request (how far away can request be deviated)
 	/// RouteCoord: Requester's coordinates
 	/// NodeID: Requester's NodeID (signed)
-	RouteRequest(RouteCoord, u64, RouteCoord, NodeID),
+	//RouteRequest(RouteCoord, u64, RouteCoord, NodeID),
 	/// Node that accepts request returns this and a RouteSession is established
 	/// RouteCoord: Accepting node's coordinates
 	/// NodeID: Accepting node's public key (signed and encrypted with requesting node's public key)
-	RouteAccept(RouteCoord, NodeID),
+	// RouteAcccept(RouteCoord, NodeID), */
 }
 pub const NUM_NODE_PACKETS: usize = 10;
 
@@ -122,16 +118,30 @@ impl RemoteNode {
 	pub fn add_packet(&self, packet: NodePacket, outgoing: &mut PacketVec) -> Result<(), RemoteNodeError> {
 		Ok(outgoing.push(self.session()?.gen_packet(packet)?))
 	}
+	/// Check if a peer is viable or not
+	pub fn is_viable_peer(&self, _self_route_coord: RouteCoord) -> Option<RouteCoord> {
+		if let (Some(route_coord), Some(_)) = (self.route_coord, &self.session) {
+			//let avg_dist = session.tracker.dist_avg;
+			//let route_dist = nalgebra::distance(route_coord.map(|s|s as f64), self_route_coord.map(|s|s as f64));
+			return Some(route_coord.clone());
+			//if self.session.is_some() && ()
+		} else { None }
+	}
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum NodeEncryption {
 	/// Handshake is sent from node wanting to establish secure tunnel to another node
+	/// session_id and signer are encrypted with recipient's public key
 	Handshake { recipient: NodeID, session_id: SessionID, signer: NodeID },
 	/// When the other node receives the Handshake, they will send back an Acknowledge
-	/// When the original party receives the Acknowledge, that tunnel may now be used 
+	/// When the original party receives the Acknowledge, that tunnel may now be used for 2-way packet transfer
+	/// acknowledger and return_ping_id are symmetrically encrypted with session key
 	Acknowledge { session_id: SessionID, acknowledger: NodeID, return_ping_id: PingID },
+	/// Symmetrically Encrypted Data transfer (packet is encrypted with session key)
 	Session { session_id: SessionID, packet: NodePacket },
+	// Asymmetrically Encrypted notification (Data and Sender are encrypted with recipient's public key)
+	Traversal { recipient: NodeID, data: u64, sender: NodeID },
 }
 
 impl NodeEncryption {

@@ -27,7 +27,7 @@ fn main() {
 	let rng = &mut rand::rngs::SmallRng::seed_from_u64(0);
 	let mut internet = InternetSim::new();
 
-	for i in 0..5 {
+	for i in 0..10 {
 		let node2 = Node::new(i, internet.lease());
 		internet.add_node(node2);
 	}
@@ -130,11 +130,11 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>, rng: &mut 
 					} else { Err("node: connect: requires a NodeID to establish secure connection")? }
 				},
 				// Test a remote node
-				Some(&"test") => {
+				/* Some(&"test") => {
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
 						node.action(NodeAction::TestNode(remote_node_id, 1000).gen_condition(NodeActionCondition::Session(remote_node_id)));
 					}
-				}
+				} */
 				Some(&"bootstrap") | Some(&"boot") => {
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
 						if let Some(Ok(remote_net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
