@@ -42,10 +42,10 @@ pub fn default_graph<GI: GraphPlottable>(item: &GI, render_range: &(Range<i32>, 
 	
 			// offset connections so both directions show side by side
 			let offset = (nalgebra::Rotation2::new(std::f32::consts::FRAC_PI_2) * (node_coord - remote_coord)).normalize();
-			let offset_node_coord = node_coord + (offset * 0.1);
-			let offset_remote_coord = remote_coord + (offset * 0.1);
+			let offset_node_coord = node_coord + (offset * 1.);
+			let offset_remote_coord = remote_coord + (offset * 1.);
 			// Draw offset edge with passed color
-			root.draw(&PathElement::new([to_tuple(offset_node_coord), to_tuple(offset_remote_coord)], ShapeStyle::from(edge.weight())))?;
+			root.draw(&PathElement::new([to_tuple(offset_node_coord), to_tuple(offset_remote_coord)], ShapeStyle::from(edge.weight()).stroke_width(3)))?;
 		}
 	}
 	

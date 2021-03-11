@@ -24,7 +24,8 @@ pub type PacketVec = SmallVec<[InternetPacket; 8]>;
 pub enum InternetRequest {
 	RouteCoordDHTRead(NodeID),
 	RouteCoordDHTWrite(NodeID, RouteCoord),
-	RouteCoordDHTResponse(Option<(NodeID, RouteCoord)>),
+	RouteCoordDHTReadResponse(NodeID, Option<RouteCoord>),
+	RouteCoordDHTWriteResponse(Option<(NodeID, RouteCoord)>),
 }
 
 #[derive(Default, Debug)]
@@ -76,18 +77,22 @@ impl<CN: CustomNode> InternetSim<CN> {
 				// Make outgoing packets have the correct return address or parse request
 				for packet in &mut outgoing_packets {
 					packet.src_addr = node_net_id;
-					match packet.request {
-						Some(InternetRequest::RouteCoordDHTRead(node_id)) => {
-							packet.dest_addr = packet.src_addr;
-							packet.request = Some(InternetRequest::RouteCoordDHTResponse(self.route_coord_dht.get(&node_id).map(|&rc|(node_id,rc))))
-						},
-						Some(InternetRequest::RouteCoordDHTWrite(node_id, route_coord)) => {
-							packet.dest_addr = packet.src_addr;
-							let old_route = self.route_coord_dht.insert(node_id, route_coord);
-							packet.request = Some(InternetRequest::RouteCoordDHTResponse( old_route.map(|r|(node_id, r) )));
-						}
-						_ => {},
-					} 
+					if let Some(request) = &packet.request {
+						log::debug!("InternetID({:?}) Requested InternetRequest::{:?}", node_net_id, request);
+						packet.request = Some(match *request {
+							InternetRequest::RouteCoordDHTRead(node_id) => {
+								packet.dest_addr = packet.src_addr;
+								let route = self.route_coord_dht.get(&node_id).map(|r|r.clone());
+								InternetRequest::RouteCoordDHTReadResponse(node_id, route)
+							},
+							InternetRequest::RouteCoordDHTWrite(node_id, route_coord) => {
+								packet.dest_addr = packet.src_addr;
+								let old_route = self.route_coord_dht.insert(node_id, route_coord);
+								InternetRequest::RouteCoordDHTWriteResponse( old_route.map(|r|(node_id, r) ))
+							}
+							_ => { log::error!("Invalid InternetRequest variant"); unimplemented!() },
+						});
+					}
 				}
 				// Send packets through the router
 				self.router.add_packets(outgoing_packets, rng);

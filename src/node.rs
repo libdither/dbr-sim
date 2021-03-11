@@ -9,25 +9,25 @@ use std::collections::{HashMap, BTreeMap};
 use std::any::Any;
 
 //use nalgebra::{DMatrix, SymmetricEigen, Vector2};
-use petgraph::graphmap::DiGraphMap;
+use petgraph::{graphmap::DiGraphMap, graph::Graph};
 use bimap::BiHashMap;
+use smallvec::SmallVec;
+use nalgebra::Point2;
 
 mod types;
 mod session;
 pub use types::{NodeID, SessionID, RouteCoord, NodePacket, NodeEncryption, RemoteNode, RemoteNodeError, RouteScalar};
 use session::{SessionError, RemoteSession};
 pub use crate::internet::{CustomNode, InternetID, InternetPacket, PacketVec};
-use crate::plot::GraphPlottable;
+use crate::{internet::InternetRequest, plot::GraphPlottable};
 
 #[derive(Debug, Clone)]
 /// A condition that should be satisfied before an action is executed
 pub enum NodeActionCondition {
 	/// Yields if there is a session of any kind with NodeID
 	Session(NodeID),
-	/* /// Yields if there is a PeerSession with NodeID
-	PeerSession(NodeID), 
-	/// Yields if node been considered as candidate for self.direct_node
-	PeerTested(NodeID),  */
+	/// Yields if passed NodeID has a RouteCoord
+	RemoteRouteCoord(NodeID),
 	/// Yields if a time in the future has passed
 	RunAt(usize), 
 }
@@ -39,6 +39,8 @@ impl NodeActionCondition {
 			NodeActionCondition::Session(node_id) => node.remote(&node_id)?.session_active(),
 			// Yields None if a specified amount of time has passed
 			NodeActionCondition::RunAt(time) => node.ticks >= time,
+			// Yield if this node has a routecoord
+			NodeActionCondition::RemoteRouteCoord(node_id) => node.remote(&node_id)?.route_coord.is_some(),
 			// Yields None if there is a session and it is direct
 			/* NodeActionCondition::PeerSession(node_id) => {
 				let remote = node.remote(&node_id)?;
@@ -68,17 +70,24 @@ pub enum NodeAction {
 	TestNode(NodeID, isize),
 	/// Test node if need new nodes
 	MaybeTestNode(NodeID), */
+	/// Run various functions pertaining to receiving specific information
+	UpdateRemote(NodeID, Option<RouteCoord>, usize, u64),
 	/// Request Peers of another node to ping me
 	RequestPeers(NodeID, usize),
 	/// Try and calculate route coordinate using Principle Coordinate Analysis of closest nodes (MDS)
-	TryCalcRouteCoord,
+	CalcRouteCoord,
+	/// Exchange Info with another node
+	ExchangeInformation(NodeID),
 	/// Organize and set/unset known nodes as peers for Routing
 	CalculatePeers,
 	/// Sends a packet out onto the network for a specific recipient
 	Traverse(NodeID, Box<NodePacket>),
 	/// Establishes Routed session with remote NodeID
-	/// Looks up remote node's RouteCoord on DHT and establishes connection proxied through multiple nodes
-	ConnectRouted(NodeID, Vec<NodePacket>),
+	/// Looks up remote node's RouteCoord on DHT and runs CalculateRoute after RouteCoord is received
+	ConnectRouted(NodeID),
+	/// Calculates and Attempts to establish a layered connection to NodeID
+	/// RouteCoord of NodeID must be known or this action will error
+	CalculateRoute(NodeID),
 	/// Send specific packet to node
 	Packet(NodeID, NodePacket),
 	/// Establish a dynamic routed connection
@@ -91,13 +100,15 @@ impl NodeAction {
 		NodeAction::Condition(condition, Box::new(self))
 	}
 }
-
+type ActionVec = SmallVec<[NodeAction; 8]>;
 #[derive(Default, Derivative)]
 #[derivative(Debug)]
 pub struct Node {
 	pub node_id: NodeID,
 	pub net_id: InternetID,
+	pub is_public: bool, // Does this node publish it's RouteCoord to the DHT?
 
+	#[derivative(Debug="ignore")]
 	pub deux_ex_data: Option<RouteCoord>,
 	pub route_coord: Option<RouteCoord>, // This node's route coordinate (None if not yet calculated)
 	pub ticks: usize, // Amount of time passed since startup of this node
@@ -109,7 +120,7 @@ pub struct Node {
 	#[derivative(Debug="ignore")]
 	pub route_map: DiGraphMap<NodeID, u64>, // Bi-directional graph of all locally known nodes and the estimated distances between them
 	// pub peered_nodes: PriorityQueue<SessionID, Reverse<RouteScalar>>, // Top subset of all 
-	pub actions_queue: Vec<NodeAction>, // Actions will wait here until NodeID session is established
+	pub action_list: ActionVec, // Actions will wait here until NodeID session is established
 }
 impl CustomNode for Node {
 	type CustomNodeAction = NodeAction;
@@ -119,7 +130,6 @@ impl CustomNode for Node {
 
 		// Parse Incoming Packets
 		for packet in incoming {
-			//let mut noise = builder.local_private_key(self.keypair.)
 			let (src_addr, dest_addr) = (packet.src_addr, packet.dest_addr);
 			match self.parse_packet(packet, &mut outgoing) {
 				Ok(Some((return_node_id, node_packet))) => {
@@ -132,41 +142,22 @@ impl CustomNode for Node {
 			}
 		}
 		
-		// Run actions in queue 
-		// This is kinda inefficient
-		let aq = self.actions_queue.clone();
-		let iter = aq.into_iter().filter_map(|action|{
-			match self.parse_action(action, &mut outgoing) {
-				Ok(returned_action) => returned_action,
-				Err(err) => { log::info!("Action errored: {:?}", err); None },
-			}
-		});
-		self.actions_queue = iter.collect();
-		/* let mut aq = self.actions_queue.clone();
-		self.actions_queue.clear();
-		let generated_actions = aq.drain_filter(|action| {
-			match self.parse_action(&action, &mut outgoing) {
-				Ok(resolved) => resolved,
-				Err(err) => { log::info!("Action {:?} errored: {:?}", action, err); false },
-			}
-		}).collect::<Vec<_>>();
-		self.actions_queue.append(&mut aq); */
-		// Check for Yielded NodeAction::Condition and list embedded action in queue
-		/*for action in generated_actions.into_iter() {
-			match action {
-				NodeAction::Condition(_, action) => self.actions_queue.push(*action),
-				_ => { log::trace!("[{: >4}] Node {} Done Action: {:?}", self.ticks, self.node_id, action); },
-			}
-		}*/
+		let mut new_actions = ActionVec::new(); // Create buffer for new actions
+		let aq = std::mem::replace(&mut self.action_list, Default::default()); // Move actions out of action_list
+		// Execute and collect actions back into action_list
+		self.action_list = aq.into_iter().filter_map(|action|{
+			self.parse_action(action, &mut outgoing, &mut new_actions).unwrap_or_else(|err|{
+				log::info!("Action errored: {:?}", err); None
+			})
+		}).collect();
+		self.action_list.append(&mut new_actions); // Record new actions
 		
 		self.ticks += 1;
 		outgoing
 	}
-	fn action(&mut self, action: NodeAction) { self.actions_queue.push(action); }
+	fn action(&mut self, action: NodeAction) { self.action_list.push(action); }
 	fn as_any(&self) -> &dyn Any { self }
-	fn set_deus_ex_data(&mut self, data: Option<RouteCoord>) {
-		self.deux_ex_data = data;
-	}
+	fn set_deus_ex_data(&mut self, data: Option<RouteCoord>) { self.deux_ex_data = data; }
 }
 #[derive(Error, Debug)]
 pub enum NodeError {
@@ -199,92 +190,53 @@ impl Node {
 		Node {
 			node_id,
 			net_id,
+			is_public: true,
 			..Default::default()
 		}
 	}
-	pub fn with_action(mut self, action: NodeAction) -> Self {
-		self.actions_queue.push(action);
-		self
-	}
+	pub fn with_action(mut self, action: NodeAction) -> Self { self.action_list.push(action); self }
 	pub fn remote(&self, node_id: &NodeID) -> Result<&RemoteNode, NodeError> { self.remotes.get(node_id).ok_or(NodeError::NoRemoteError{node_id: *node_id}) }
 	pub fn remote_mut(&mut self, node_id: &NodeID) -> Result<&mut RemoteNode, NodeError> { self.remotes.get_mut(node_id).ok_or(NodeError::NoRemoteError{node_id: *node_id}) }
 
-	pub fn parse_action(&mut self, action: NodeAction, outgoing: &mut PacketVec) -> Result<Option<NodeAction>, NodeError> {
+	// Returns true if action should be deleted and false if it should not be
+	pub fn parse_action(&mut self, action: NodeAction, outgoing: &mut PacketVec, out_actions: &mut ActionVec) -> Result<Option<NodeAction>, NodeError> {
 		match action {
 			// Bootstrap node onto the network
 			NodeAction::Bootstrap(remote_node_id, net_id) => {
-				self.action(NodeAction::Connect(remote_node_id, net_id, vec![NodePacket::ExchangeInfo(self.route_coord, 0, 0)])); // ExchangeInfo packet will be filled in dynamically
+				out_actions.push(NodeAction::Connect(remote_node_id, net_id, vec![NodePacket::ExchangeInfo(self.route_coord, 0, 0)])); // ExchangeInfo packet will be filled in dynamically
 			},
 			// Connect to remote node
 			NodeAction::Connect(remote_node_id, remote_net_id, packets) => {
 				self.direct_connect(remote_node_id, remote_net_id, packets, outgoing);
 			},
-			/* NodeAction::Ping(remote_node_id, num_pings) => {
-				let self_ticks = self.ticks;
-				let session = self.remote_mut(&remote_node_id)?.session_mut()?;
-				for _ in 0..num_pings {
-					let packet = NodePacket::Ping(session.tracker.gen_ping(self_ticks));
-					let packet: InternetPacket = session.gen_packet(packet)?;
-					outgoing.push(packet);
-				}
-			}, */
-			/* NodeAction::MaybeTestNode(remote_node_id) => {
-				// If have active session
-				if let Ok(session) = self.remote(&remote_node_id)?.session() {
-					// If node is not currently being tested, and this node is not already tested
-					if !session.is_testing && self.node_list.iter().find(|(_, &id)|id==remote_node_id).is_none() {
-						// Test the node!
-						self.action(NodeAction::TestNode(remote_node_id, 3000));
-					}
-				}
+			NodeAction::UpdateRemote(remote_node_id, remote_route_coord, remote_direct_count, remote_ping) => {
+				let self_route_coord = self.route_coord;
 				
+				// Record Remote Coordinate
+				let remote = self.remote_mut(&remote_node_id)?;
+				remote.route_coord = remote_route_coord;
+
+				// If this node has coord,
+				if let Some(self_route_coord) = self.route_coord {
+					// If have enough peers & want to host node as public, write RouteCoord to DHT
+					if self.peer_list.len() >= TARGET_PEER_COUNT && self.is_public {
+						outgoing.push( InternetPacket::gen_request(self.net_id, InternetRequest::RouteCoordDHTWrite(self.node_id, self_route_coord)) );
+					}
+				} else { // Otherwise, calculate Route Coordinate
+					out_actions.push(NodeAction::CalcRouteCoord);
+				}
+				// If need more peers & remote has a peer, request pings
+				if self.node_list.len() < TARGET_PEER_COUNT && remote_direct_count >= 2 {
+					self.remote_mut(&remote_node_id)?.add_packet(NodePacket::RequestPings(TARGET_PEER_COUNT, self_route_coord), outgoing)?;
+				}
 			}
-			NodeAction::TestNode(remote_node_id, timeout) => {
-				let self_node_id = self.node_id;
-
-				let session = self.remote_mut(&remote_node_id)?.session_mut()?;
-
-				let pending_pings = session.tracker.pending_pings();
-				let test_results = session.test_direct();
-				log::trace!("Node({}) Testing Node({}). Is viable: {:?},  pending pings: {:?}, ping_count: {:?}", self_node_id, remote_node_id, test_results, pending_pings, session.tracker.ping_count);
-				
-				let distance = session.tracker.distance();
-				match test_results {
-					// Need to ping more to get better test result
-					None => {
-						if pending_pings < 2 {
-							self.action(NodeAction::Ping(remote_node_id, 2).gen_condition(NodeActionCondition::Session(remote_node_id)));
-						}
-						if timeout > 0 {
-							self.action(NodeAction::TestNode(remote_node_id, timeout - 300).gen_condition(NodeActionCondition::RunAt(self.ticks + 300)));
-						} else { log::warn!("Direct Test timed out: {:?}", action) }
-					},
-					// Test result comes back true or false. true 
-					Some(status) => {
-						if status {
-							self.node_list.insert(distance, remote_node_id);
-							// If close, send peer request
-							if self.node_list.iter().take(TARGET_PEER_COUNT).find(|(_,&id)|id == remote_node_id).is_some() {
-								self.action(NodeAction::TryNotifyPeer(remote_node_id));
-								if let Some(node) = self.node_list.values().nth(TARGET_PEER_COUNT) {
-									if self.remote(node)?.session()?.is_peer() {
-										self.action(NodeAction::TryNotifyPeer(u32::MAX)); // Notify removal of old peers
-									}
-								}
-								self.action(NodeAction::RequestPeers(remote_node_id, TARGET_PEER_COUNT))
-							}
-						}
-						return Ok(true);
-					}
-				}
-			}, */
-			// Secondary bootstrap to manually get more information about certain parts of the network
-			NodeAction::RequestPeers(remote_node_id, num_peers) => {
-				self.remote_mut(&remote_node_id)?.add_packet(NodePacket::RequestPings(num_peers), outgoing)?;
-			},
-			NodeAction::TryCalcRouteCoord => {
+			NodeAction::CalcRouteCoord => {
 				self.route_coord = Some(self.calculate_route_coord()?);
-				if self.route_coord.is_some() { self.action(NodeAction::CalculatePeers); }
+				out_actions.push(NodeAction::CalculatePeers);
+			},
+			NodeAction::ExchangeInformation(remote_node_id) => {
+				let remote = self.remote(&remote_node_id)?;
+				remote.add_packet(NodePacket::ExchangeInfo(self.route_coord, self.peer_list.len(), remote.session()?.tracker.dist_avg), outgoing)?;
 			},
 			// Calculate peer_list, the somewhat permanent list of peers to connect to
 			NodeAction::CalculatePeers => {
@@ -294,20 +246,30 @@ impl Node {
 					let node = &self.remotes[node_id];
 					if let Some(route_coord) = node.is_viable_peer(self_route_coord) { Some((*node_id, route_coord)) } else { None }
 				}).take(TARGET_PEER_COUNT).collect();
+				for (node_id, _) in &self.peer_list {
+					out_actions.push(NodeAction::ExchangeInformation(*node_id));
+				}
 			},
-			NodeAction::ConnectRouted(remote_node_id, packets) => {
-				self.routed_connect(remote_node_id, packets, outgoing);
+			NodeAction::ConnectRouted(remote_node_id) => {
+				// Send DHT Request
+				outgoing.push(InternetPacket::gen_request(self.net_id, InternetRequest::RouteCoordDHTRead(remote_node_id)));
+				// Run action when DHT responds
+				out_actions.push(NodeAction::CalculateRoute(remote_node_id).gen_condition(NodeActionCondition::RemoteRouteCoord(remote_node_id)));
 			},
+			NodeAction::CalculateRoute(remote_node_id) => {
+				let _self_route_coord = self.route_coord.ok_or(NodeError::NoCalculatedRouteCoord)?;
+				let _remote_route_coord = self.remote(&remote_node_id)?.route_coord.ok_or(NodeError::NoCalculatedRouteCoord)?;
+			}
 			NodeAction::Packet(remote_node_id, packet) => {
 				self.remote(&remote_node_id)?.add_packet(packet, outgoing)?;
 			},
 			NodeAction::Condition(condition, embedded_action) => {
-				// Returns embedded action if condition is satisfied (e.g. check() returns true), else returns this NodeAction::Condition
-				return Ok(Some(if condition.check(self)? { *embedded_action } else { NodeAction::Condition(condition, embedded_action) }))
+				// Returns embedded action if condition is satisfied (e.g. check() returns true), else returns false to prevent action from being deleted
+				if condition.check(self)? { return Ok(Some(*embedded_action)); } else { return Ok(Some(NodeAction::Condition(condition, embedded_action))); }
 			}
 			_ => { unimplemented!("Unimplemented Action") },
 		}
-		Ok(None) // By default no action is returned
+		Ok(None) // By default don't return action
 	}
 	pub fn parse_node_packet(&mut self, return_node_id: NodeID, received_packet: NodePacket, outgoing: &mut PacketVec) -> Result<(), NodeError> {
 		log::debug!("[{: >4}] Node({}) received NodePacket::{:?} from NodeID({})", self.ticks, self.node_id, received_packet, return_node_id);
@@ -325,49 +287,29 @@ impl Node {
 					self.parse_node_packet(return_node_id, packet, outgoing)?;
 				}
 			}
-			NodePacket::Ping(ping_id) => {
-				self.remote(&return_node_id)?.add_packet(NodePacket::PingResponse(ping_id), outgoing)?;
-			},
-			NodePacket::PingResponse(ping_id) => {
-				let distance = self.remote_mut(&return_node_id)?.session_mut()?.tracker.acknowledge_ping(ping_id, self_ticks)?;
-				self.route_map.add_edge(self.node_id, return_node_id, distance);
-			},
-			NodePacket::ExchangeInfo(remote_route_coord, _remote_peer_count, remote_ping) => {
+			NodePacket::ExchangeInfo(remote_route_coord, _remote_direct_count, remote_ping) => {
+				if self.node_id == 0 && self.node_list.len() == 1 && self.route_coord.is_none() { self.route_coord = Some(self.calculate_route_coord()?); }
 				// Note dual-edge
 				self.route_map.add_edge(return_node_id, self.node_id, remote_ping);
 
 				let route_coord = self.route_coord;
-				let peer_count = self.remotes.len();
+				let peer_count = self.node_list.len();
 				let remote = self.remote_mut(&return_node_id)?;
 				let ping = remote.session()?.tracker.dist_avg;
-				remote.route_coord = remote_route_coord; // Make note of routing coordinate if exists
-
 				remote.add_packet(NodePacket::ExchangeInfoResponse(route_coord, peer_count, ping), outgoing)?;
-				/*if remote_peer_count > 1 {
-					self.action(NodeAction::MaybeTestNode(return_node_id));
-				}*/
+
+				self.action(NodeAction::UpdateRemote(return_node_id, remote_route_coord, _remote_direct_count, remote_ping));
 			},
-			NodePacket::ExchangeInfoResponse(remote_route_coord, remote_peer_count, remote_ping) => {
-				let self_node_count = self.node_list.len();
+			NodePacket::ExchangeInfoResponse(remote_route_coord, remote_direct_count, remote_ping) => {
+				//let self_node_count = self.node_list.len();
+				let self_route_coord = self.route_coord;
 				
 				// Note dual-edge
 				self.route_map.add_edge(return_node_id, self.node_id, remote_ping);
 				let remote = self.remote_mut(&return_node_id)?;
 				remote.route_coord = remote_route_coord; // Make note of routing coordinate if exists
 
-				let ping = remote.session()?.tracker.dist_avg;
-				if remote_peer_count <= 1 && remote_route_coord.is_none() {
-					remote.add_packet(NodePacket::ProposeRouteCoords(Point2::new(0,0), Point2::new(0,ping as i64)), outgoing)?;
-				} else {
-					// If not at target, it is small network, attempt to calculate
-					if self_node_count == remote_peer_count && self_node_count < TARGET_PEER_COUNT {
-						self.action(NodeAction::TryCalcRouteCoord);
-					} else if self_node_count < TARGET_PEER_COUNT { // If not found all targets on small network
-						remote.add_packet(NodePacket::RequestPings(TARGET_PEER_COUNT), outgoing)?;
-					} else { // It is large network
-						self.action(NodeAction::TryCalcRouteCoord);
-					}
-				}
+				self.action(NodeAction::UpdateRemote(return_node_id, remote_route_coord, remote_direct_count, remote_ping));
 			},
 			NodePacket::ProposeRouteCoords(route_coord_proposal, remote_route_coord_proposal) => {
 				if None == self.route_coord {
@@ -386,21 +328,33 @@ impl Node {
 					self.remote_mut(&return_node_id)?.route_coord = Some(initial_remote_proposal);
 				}
 			},
-			NodePacket::RequestPings(requests) => {
-				if let Some(time) = packet_last_received { if time < 300 { return Ok(()) } }
+			NodePacket::RequestPings(requests, requester_route_coord) => {
+				if let Some(time) = packet_last_received { if time < 2000 { return Ok(()) } } // Nodes should not be spamming this multiple times
 				// Loop through first min(N,MAX_REQUEST_PINGS) items of priorityqueue
 				let num_requests = usize::min(requests, MAX_REQUEST_PINGS); // Maximum of 10 requests
 
+				self.remote_mut(&return_node_id)?.route_coord = requester_route_coord;
+				let closest_nodes = if let Some(route_coord) = requester_route_coord {
+					let point_target = route_coord.map(|s|s as f64);
+					let mut sorted = self.peer_list.iter().map(|(&id,p)|{
+						(id, nalgebra::distance_squared(&p.map(|s|s as f64), &point_target) as u64)
+					}).collect::<Vec<(NodeID, u64)>>();
+					sorted.sort_unstable_by_key(|k|k.1);
+					sorted.iter().map(|s|s.0).take(num_requests).collect()
+				} else {
+					self.node_list.iter().map(|(_,&id)|id).take(num_requests).collect::<Vec<NodeID>>()
+				};
+
+				// Locate nearest peers to requester_route_coord
+				
+				// Send WantPing packet to first num_requests of those peers
 				let want_ping_packet = NodePacket::WantPing(return_node_id, self.remote(&return_node_id)?.session()?.return_net_id);
-				for (_, node_id) in self.node_list.iter().take(num_requests) {
-					// Generate packet sent to nearby remotes that this node wants to be pinged (excluding requester)
-					let remote = self.remote(node_id)?;
+				for node_id in closest_nodes {
+					let remote = self.remote(&node_id)?;
 					if remote.node_id != return_node_id {
 						remote.add_packet(want_ping_packet.clone(), outgoing)?;
 					}
 				}
-
-				//self.action(NodeAction::MaybeTestNode(return_node_id));
 			},
 			// Initiate Direct Handshakes with people who want pings
 			NodePacket::WantPing(requesting_node_id, requesting_net_id) => {
@@ -431,10 +385,25 @@ impl Node {
 				// Record peer rank
 				let session = self.remote_mut(&return_node_id)?.session_mut()?;
 				session.record_peer_notify(rank);
-			}
-			/*NodePacket::Traverse(target_route_coord, encrypted_data) => {
-				// outgoing.push(value)
-			},*/
+			},
+			NodePacket::Traverse(ref target_route_coord, ref encrypted_data) => {
+				let float_target_route_coord = target_route_coord.map(|s|s as f64);
+				if let Some((&min_node_id, _)) = self.peer_list.iter().min_by_key(|(_,p)|nalgebra::distance_squared(&p.map(|s|s as f64), &float_target_route_coord) as i64) {
+					if match **encrypted_data {
+						NodeEncryption::Traversal { recipient, data, sender } => {
+							if recipient == self.node_id {
+								// If packet meant for me, log it
+								log::info!("Received Traverse packet with data: {} from NodeID({})", data, sender); false
+							} else { true }
+						}
+						_ => { unimplemented!("Traverse doesn't support this NodeEncryption variant") }
+					} {
+						if min_node_id != return_node_id {
+							self.remote(&min_node_id)?.add_packet(received_packet, outgoing)?; // Forward packet to nearest to destination
+						} else { log::error!("Shoudn't sent Traverse back to sending node") }
+					}
+				} else { log::error!("Failed to find Minimum distance node"); }
+			},
 			_ => { },
 		}
 		Ok(())
@@ -451,15 +420,30 @@ impl Node {
 		let encryption = NodeEncryption::Handshake { recipient: dest_node_id, session_id, signer: self.node_id };
 		outgoing.push(encryption.package(dest_addr))
 	}
-	fn routed_connect(&mut self, dest_node_id: NodeID, initial_packets: Vec<NodePacket>, outgoing: &mut PacketVec) {
-		let session_id: SessionID = rand::random();
+	/* fn routed_connect(&mut self, dest_node_id: NodeID, initial_packets: Vec<NodePacket>, outgoing: &mut PacketVec) {
+		/*let session_id: SessionID = rand::random();
 		let remote = self.remotes.entry(dest_node_id).or_insert(RemoteNode::new(dest_node_id));
-		remote.handshake_pending = Some((session_id, usize::MAX, initial_packets));
+		remote.handshake_pending = Some((session_id, usize::MAX, initial_packets));*/
 
-	}
+	} */
 	/// Parses handshakes, acknowledgments and sessions, Returns Some(remote_net_id, packet_to_parse) if session or handshake finished
 	fn parse_packet(&mut self, received_packet: InternetPacket, outgoing: &mut PacketVec) -> Result<Option<(NodeID, NodePacket)>, NodeError> {
 		if received_packet.dest_addr != self.net_id { return Err(NodeError::InvalidNetworkRecipient { from: received_packet.src_addr, intended_dest: received_packet.dest_addr }) }
+
+		if let Some(request) = received_packet.request {
+			match request {
+				InternetRequest::RouteCoordDHTReadResponse(query_node_id, route_option) => {
+					if let Some(query_route_coord) = route_option {
+						self.remote_mut(&query_node_id)?.route_coord.get_or_insert(query_route_coord);
+					} else {
+						log::warn!("No Route Coordinate found for: {:?}", query_node_id);
+					}
+				},
+				InternetRequest::RouteCoordDHTWriteResponse(_) => {},
+				_ => { log::warn!("Not a InternetRequest Response variant") }
+			}
+			return Ok(None);
+		}
 
 		let return_net_id = received_packet.src_addr;
 		let encrypted = NodeEncryption::unpackage(&received_packet)?;
@@ -521,8 +505,9 @@ impl Node {
 		}).collect::<Vec<NodePacket>>())
 	}
 	fn calculate_route_coord(&mut self) -> Result<RouteCoord, NodeError> {
-		//self.route_coord = ;
-		return self.deux_ex_data.ok_or(NodeError::Other(anyhow!("no deus ex machina data")));
+		let route_coord = self.deux_ex_data.ok_or(NodeError::Other(anyhow!("no deus ex machina data")))?;
+		log::debug!("NodeID({}) Assigned RouteCoord({})", self.node_id, route_coord);
+		return Ok(route_coord);
 
 		/* // TODO: Refactor this implementation of multidimensional scaling
 		// println!("node_list: {:?}", self.remotes.iter().map(|(&id,n)|(id,n.route_coord)).collect::<Vec<(NodeID,Option<RouteCoord>)>>() );
@@ -614,8 +599,6 @@ impl Node {
 }
 
 use plotters::style::RGBColor;
-use petgraph::Graph;
-use nalgebra::Point2;
 impl GraphPlottable for Node {
 	fn gen_graph(&self) -> Graph<(String, Point2<i32>), RGBColor> {
 		for _node in self.route_map.nodes() {

@@ -17,29 +17,28 @@ pub type RouteCoord = Point2<i64>;
 /// Packets that are sent between nodes in this protocol.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum NodePacket {
-	/// Send immediately after receiving a an Acknowledgement, allows other node to get a rough idea about the node's latency
+	/// ### Connection System
+	/// Sent immediately after receiving a an Acknowledgement, allows other node to get a rough idea about the node's latency
 	/// Contains list of packets for remote to respond to 
 	ConnectionInit(PingID, Vec<NodePacket>),
-	/// Send multiple packets simultaneously
-	Multiple(Vec<NodePacket>),
 
-	/// Information Exchange System
+	/// ### Information Exchange System
 	/// Send info to another peer in exchange for their info
+	/// * `Option<RouteCoord>`: Tell another node my Route Coordinate if I have it
+	/// * `usize`: number of direct connections I have
+	/// * `u64`: ping (latency) to remote node
 	ExchangeInfo(Option<RouteCoord>, usize, u64), // My Route coordinate, number of peers, remote ping
 	ExchangeInfoResponse(Option<RouteCoord>, usize, u64),
-	
-	/// Sent to other Nodes. Expects PingResponse returned
-	Ping(PingID), // Random number uniquely identifying this ping request
-	/// PingResponse packet, time between Ping and PingResponse is measured
-	PingResponse(PingID), // Acknowledge Ping(u64), sends back originally sent number
 
 	/// Propose routing coordinates if nobody has any nodes
 	ProposeRouteCoords(RouteCoord, RouteCoord), // First route coord = other node, second route coord = myself
 	ProposeRouteCoordsResponse(RouteCoord, RouteCoord, bool), // Proposed route coords (original coordinates, orientation), bool = true if acceptable
 
-	/// Self-Organization System
-	/// Request to a peer for them to request their peers to ping me
-	RequestPings(usize), // usize: max number of pings
+	/// ### Self-Organization System
+	/// Request a certain number of another node's peers that are closest to this node to make themselves known
+	/// * `usize`: Number of peers requested
+	/// * `Option<RouteCoord>`: Route Coordinates of the other node if it has one
+	RequestPings(usize, Option<RouteCoord>),
 
 	/// Tell a peer that this node wants a ping (implying a potential direct connection)
 	WantPing(NodeID, InternetID),
