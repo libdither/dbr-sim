@@ -28,8 +28,16 @@ pub enum NodePacket {
 	/// * `usize`: number of direct connections I have
 	/// * `u64`: ping (latency) to remote node
 	ExchangeInfo(Option<RouteCoord>, usize, u64), // My Route coordinate, number of peers, remote ping
+	/// Send info in response to an ExchangeInfo packet
+	/// * `Option<RouteCoord>`: Tell another node my Route Coordinate if I have it
+	/// * `usize`: number of direct connections I have
+	/// * `u64`: ping (latency) to remote node
 	ExchangeInfoResponse(Option<RouteCoord>, usize, u64),
-
+	/// Notify another node of peership
+	/// * `usize`: Rank of remote in peer list
+	/// * `RouteCoord`: My Route Coordinate
+	/// * `usize`: Number of peers I have
+	PeerNotify(usize, RouteCoord, usize, u64),
 	/// Propose routing coordinates if nobody has any nodes
 	ProposeRouteCoords(RouteCoord, RouteCoord), // First route coord = other node, second route coord = myself
 	ProposeRouteCoordsResponse(RouteCoord, RouteCoord, bool), // Proposed route coords (original coordinates, orientation), bool = true if acceptable
@@ -47,9 +55,7 @@ pub enum NodePacket {
 	/// * `u64`: Distance to that node
 	AcceptWantPing(NodeID, u64),
 
-	/// Notify another node of peership
-	/// * `usize`: Rank of how close peer is compared to other nodes, usize::MAX signifies no longer consider node
-	PeerNotify(usize),
+	
 
 	/// Packet Traversal
 	/// Represents a network traversal packet, It is routed through the network via it's RouteCoord

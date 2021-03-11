@@ -27,7 +27,7 @@ fn main() {
 	let rng = &mut rand::rngs::SmallRng::seed_from_u64(0);
 	let mut internet = InternetSim::new();
 
-	for i in 0..2 {
+	for i in 0..10 {
 		let node2 = Node::new(i, internet.lease());
 		internet.add_node(node2);
 	}
