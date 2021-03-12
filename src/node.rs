@@ -251,17 +251,24 @@ impl Node {
 			NodeAction::CalculatePeers => {
 				// Collect the viable peers
 				let self_route_coord = self.route_coord.ok_or(NodeError::NoCalculatedRouteCoord)?;
-				self.peer_list = self.node_list.iter().filter_map(|(_, node_id)| {
-					let node = &self.remotes[node_id];
-					if let Some(route_coord) = node.is_viable_peer(self_route_coord) { Some((*node_id, route_coord)) } else { None }
+				let direct_nodes = self.node_list.iter().map(|s|*s.1).collect::<Vec<NodeID>>();
+				self.peer_list = direct_nodes.iter().filter_map(|node_id| {
+					let remote = self.remote(node_id).unwrap();
+					if let Some(route_coord) = remote.is_viable_peer(self_route_coord) { Some((*node_id, route_coord)) } else { None }
 				}).take(TARGET_PEER_COUNT).collect();
-				// Notify Select Peers
+				
+				// Notify Peers if just became peer
 				let num_peers = self.peer_list.len();
-				for (idx, (node_id, _)) in self.peer_list.iter().enumerate() {
-					let remote = self.remote(node_id)?;
-					let dist = remote.session()?.tracker.dist_avg;
-					self.remote(node_id)?.add_packet(NodePacket::PeerNotify(idx, self_route_coord, num_peers, dist), outgoing)?;
+				for node_id in direct_nodes {
+					let toggle = self.peer_list.contains_left(&node_id);
+					let remote = self.remote_mut(&node_id)?;
+					if !remote.session()?.is_peer() && toggle {
+						let dist = remote.session()?.tracker.dist_avg;
+						remote.add_packet(NodePacket::PeerNotify(0, self_route_coord, num_peers, dist), outgoing)?;
+					} else {  }
+					remote.session_mut()?.set_peer(toggle);
 				}
+				
 				// If have enough peers & want to host node as public, write RouteCoord to DHT
 				if self.peer_list.len() >= TARGET_PEER_COUNT && self.is_public && self.public_route != self.route_coord {
 					self.public_route = self.route_coord;
@@ -365,8 +372,10 @@ impl Node {
 				self.remote_mut(&return_node_id)?.route_coord = requester_route_coord;
 				let closest_nodes = if let Some(route_coord) = requester_route_coord {
 					let point_target = route_coord.map(|s|s as f64);
-					let mut sorted = self.peer_list.iter().map(|(&id,p)|{
-						(id, nalgebra::distance_squared(&p.map(|s|s as f64), &point_target) as u64)
+					let mut sorted = self.node_list.iter().filter_map(|(&_,&id)|{
+						if let Some(p) = self.remote(&id).unwrap().route_coord {
+							Some((id, nalgebra::distance_squared(&p.map(|s|s as f64), &point_target) as u64))
+						} else { None }
 					}).collect::<Vec<(NodeID, u64)>>();
 					sorted.sort_unstable_by_key(|k|k.1);
 					sorted.iter().map(|s|s.0).take(num_requests).collect()
@@ -414,6 +423,7 @@ impl Node {
 				// Record peer rank
 				//let session = self.remote_mut(&return_node_id)?.session_mut()?;
 				//session.record_peer_notify(rank);
+				// Update remote
 				self.action(NodeAction::UpdateRemote(return_node_id, Some(route_coord), peer_count, peer_distance));
 			},
 			NodePacket::Traverse(ref target_route_coord, ref encrypted_data) => {

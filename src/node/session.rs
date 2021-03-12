@@ -76,10 +76,10 @@ impl SessionTracker {
 /// Represents session that is routed directly (through the internet)
 #[derive(Default, Debug)]
 pub struct PeerSession {
-	pub reciprocal: bool,
+	pub reciprocal: Option<usize>, // PeerIncoming rank
 }
 impl PeerSession {
-	fn new() -> Self { Self { reciprocal: false } }
+	fn new(reciprocal: Option<usize>) -> Self { Self { reciprocal } }
 }
 /// Represents session that is routed through alternate nodes
 #[derive(Debug)]
@@ -101,9 +101,6 @@ pub enum SessionType {
 	Peer(PeerSession),
 	// Routed session
 	Routed(RoutedSession),
-}
-impl SessionType {
-	fn peer() -> Self { Self::Peer(PeerSession::new()) }
 }
 
 #[derive(Error, Debug)]
@@ -139,20 +136,20 @@ impl RemoteSession {
 	}
 	pub fn from_id(session_id: SessionID, return_net_id: InternetID) -> Self { Self::new(session_id, SessionType::Normal, return_net_id) }
 
-	/// Test if viable and note that testing is commencing
-	pub fn test_direct(&mut self) -> Option<bool> {
-		self.is_testing = true;
-		let is_viable = self.tracker.is_viable();
-		if let Some(_) = is_viable { self.is_testing = false };
-		is_viable
+	pub fn set_peer(&mut self, toggle: bool) {
+		match self.session_type {
+			SessionType::Normal => if toggle { self.session_type = SessionType::Peer(PeerSession::new(None)) },
+			SessionType::IncomingPeer(rank) => if toggle { self.session_type = SessionType::Peer(PeerSession::new(Some(rank))) },
+			SessionType::Peer(ref peer_session) => if !toggle { self.session_type = if let Some(rank) = peer_session.reciprocal { SessionType::IncomingPeer(rank) } else { SessionType::Normal } }
+			_ => {},
+		}
 	}
-
 	pub fn is_peer(&self) -> bool { if let SessionType::Peer(_) = self.session_type { true } else { false } }
 	pub fn record_peer_notify(&mut self, rank: usize) { 
 		match &mut self.session_type {
 			SessionType::Normal => self.session_type = SessionType::IncomingPeer(rank),
 			SessionType::IncomingPeer(num) => if rank == usize::MAX { self.session_type = SessionType::Normal } else { *num = rank },
-			SessionType::Peer(peer_session) => peer_session.reciprocal = true,
+			SessionType::Peer(peer_session) => peer_session.reciprocal = Some(rank),
 			_ => {},
 		}
 	}

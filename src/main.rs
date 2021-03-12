@@ -27,21 +27,23 @@ fn main() {
 	let rng = &mut rand::rngs::SmallRng::seed_from_u64(0);
 	let mut internet = InternetSim::new();
 
-	for i in 0..15 {
+	for i in 0..20 {
 		let node2 = Node::new(i, internet.lease());
-		internet.add_node(node2);
+		internet.add_node(node2, rng);
 	}
 
+	let snapshots_per_boot = 10;
 	for i in 1..(internet.nodes.len()+0) {
 		if let Some(node) = internet.node_mut(i as InternetID) {
 			node.action(NodeAction::Bootstrap(0,0));
 		} else { log::error!("Node at InternetID({}) doesn't exist", i)}
-		for _j in 0..1 {
-			internet.tick(10000, rng);
-			plot::default_graph(&internet, &internet.router.field_dimensions, &format!("target/images/{:0>6}.png", (i-1)*30+_j), (1280,720)).unwrap();
+		for _j in 0..snapshots_per_boot {
+			internet.tick(300/snapshots_per_boot, rng);
+			//plot::default_graph(&internet, &internet.router.field_dimensions, &format!("target/images/{:0>6}.png", (i-1)*snapshots_per_boot+_j), (1280,720)).unwrap();
 		}
 	}
-	//internet.gen_routing_plot(&format!("target/images/{:0>6}.png", i/100), (500, 500)).expect("Failed to output image");
+	internet.tick(3000, rng);
+	plot::default_graph(&internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (1280, 720)).expect("Failed to output image");
 	internet.node_mut(8).unwrap().action(NodeAction::Traverse(7, 1000));
 	internet.tick(1000, rng);
 
@@ -70,7 +72,7 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>, rng: &mut 
 			if let Some(Ok(node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
 				let node = Node::new(node_id, internet.lease());
 				println!("Adding Node: {:?}", node);
-				internet.add_node(node);
+				internet.add_node(node, rng);
 			} else { Err("add: requires second argument to be NodeID")? }
 		},
 		// Removing Nodes
