@@ -40,7 +40,7 @@ impl NodeActionCondition {
 			// Yields None if a specified amount of time has passed
 			NodeActionCondition::RunAt(time) => node.ticks >= time,
 			// Yield if this node has a routecoord
-			NodeActionCondition::RemoteRouteCoord(node_id) => node.remote(&node_id)?.route_coord.is_some(),
+			NodeActionCondition::RemoteRouteCoord(node_id) => node.remote(&node_id).ok().map(|r|r.route_coord).flatten().is_some(),
 			// Yields None if there is a session and it is direct
 			/* NodeActionCondition::PeerSession(node_id) => {
 				let remote = node.remote(&node_id)?;
@@ -83,7 +83,9 @@ pub enum NodeAction {
 	/// Organize and set/unset known nodes as peers for Routing
 	CalculatePeers,
 	/// Sends a packet out onto the network for a specific recipient
-	Traverse(NodeID, Box<NodePacket>),
+	Traverse(NodeID, u64),
+	/// Send DHT request for Route Coordinate
+	RequestRouteCoord(NodeID),
 	/// Establishes Routed session with remote NodeID
 	/// Looks up remote node's RouteCoord on DHT and runs CalculateRoute after RouteCoord is received
 	ConnectRouted(NodeID),
@@ -150,8 +152,9 @@ impl CustomNode for Node {
 		let aq = std::mem::replace(&mut self.action_list, Default::default()); // Move actions out of action_list
 		// Execute and collect actions back into action_list
 		self.action_list = aq.into_iter().filter_map(|action|{
+			let action_clone = action.clone();
 			self.parse_action(action, &mut outgoing, &mut new_actions).unwrap_or_else(|err|{
-				log::info!("Action errored: {:?}", err); None
+				log::error!("NodeID({}), Action {:?} errored: {:?}", self.node_id, action_clone, err); None
 			})
 		}).collect();
 		self.action_list.append(&mut new_actions); // Record new actions
@@ -177,6 +180,8 @@ pub enum NodeError {
 	UnknownAcknowledgement { from: NodeID },
 	#[error("There is no calculated route coordinate for this node")]
 	NoCalculatedRouteCoord,
+	#[error("There is no remote RouteCoord recorded for NodeID({remote:?})")]
+	NoRemoteRouteCoord { remote: NodeID },
 	#[error("Triggered RemoteNodeError")]
 	RemoteNodeError(#[from] RemoteNodeError),
 	#[error("Remote Session Error")]
@@ -222,9 +227,7 @@ impl Node {
 				remote.route_coord = remote_route_coord;
 
 				// If this node has coord,
-				if let Some(self_route_coord) = self.route_coord {
-					
-				} else { // Otherwise, calculate Route Coordinate
+				if let None = self.route_coord {
 					out_actions.push(NodeAction::CalcRouteCoord);
 					did_route_change = false;
 				}
@@ -264,6 +267,23 @@ impl Node {
 					self.public_route = self.route_coord;
 					outgoing.push( InternetPacket::gen_request(self.net_id, InternetRequest::RouteCoordDHTWrite(self.node_id, self_route_coord)) );
 				}
+			},
+			NodeAction::Traverse(remote_node_id, data) => {
+				if let Ok(Some(remote_route_coord)) = self.remote(&remote_node_id).map(|n|n.route_coord) {
+					let encryption = NodeEncryption::Traversal { recipient: remote_node_id, data, sender: self.node_id };
+					let remote_route_coord_f64 = remote_route_coord.map(|s|s as f64);
+					if let Some((min_node_id, _)) = self.peer_list.iter().min_by_key(|(_,p)|nalgebra::distance_squared(&p.map(|s|s as f64), &remote_route_coord_f64) as i64) {
+						self.remote(min_node_id)?.add_packet(NodePacket::Traverse(remote_route_coord, Box::new(encryption)), outgoing)?;
+					} else { log::error!("Could not find close node for Traverse action"); }
+					return Ok(None);
+				} else {
+					out_actions.push(NodeAction::RequestRouteCoord(remote_node_id));
+					out_actions.push(NodeAction::Traverse(remote_node_id, data).gen_condition(NodeActionCondition::RemoteRouteCoord(remote_node_id)));
+				}
+				//let remote = self.remote(&remote_node_id)?.route_coord.ok_or(NodeError::NoRemoteRouteCoord { remote: remote_node_id })?;
+			},
+			NodeAction::RequestRouteCoord(remote_node_id) => {
+				outgoing.push(InternetPacket::gen_request(self.net_id, InternetRequest::RouteCoordDHTRead(remote_node_id)));
 			},
 			NodeAction::ConnectRouted(remote_node_id) => {
 				// Send DHT Request
@@ -403,7 +423,7 @@ impl Node {
 						NodeEncryption::Traversal { recipient, data, sender } => {
 							if recipient == self.node_id {
 								// If packet meant for me, log it
-								log::info!("Received Traverse packet with data: {} from NodeID({})", data, sender); false
+								log::info!("NodeID({}) Received Traverse packet with data: {} from NodeID({})", self.node_id, data, sender); false
 							} else { true }
 						}
 						_ => { unimplemented!("Traverse doesn't support this NodeEncryption variant") }
@@ -444,7 +464,8 @@ impl Node {
 			match request {
 				InternetRequest::RouteCoordDHTReadResponse(query_node_id, route_option) => {
 					if let Some(query_route_coord) = route_option {
-						self.remote_mut(&query_node_id)?.route_coord.get_or_insert(query_route_coord);
+						let remote = self.remotes.entry(query_node_id).or_insert(RemoteNode::new(query_node_id));
+						remote.route_coord.get_or_insert(query_route_coord);
 					} else {
 						log::warn!("No Route Coordinate found for: {:?}", query_node_id);
 					}

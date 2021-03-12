@@ -15,7 +15,7 @@ use std::io::{self, prelude::*};
 pub mod internet;
 use internet::{InternetID, InternetSim, CustomNode};
 pub mod node;
-use node::{Node, NodeAction, NodeID};
+use node::{Node, NodeAction, NodeID, NodeEncryption};
 pub mod plot;
 use rand::SeedableRng;
 
@@ -27,7 +27,7 @@ fn main() {
 	let rng = &mut rand::rngs::SmallRng::seed_from_u64(0);
 	let mut internet = InternetSim::new();
 
-	for i in 0..10 {
+	for i in 0..15 {
 		let node2 = Node::new(i, internet.lease());
 		internet.add_node(node2);
 	}
@@ -38,10 +38,12 @@ fn main() {
 		} else { log::error!("Node at InternetID({}) doesn't exist", i)}
 		for _j in 0..1 {
 			internet.tick(10000, rng);
-			//plot::default_graph(&internet, &internet.router.field_dimensions, &format!("target/images/{:0>6}.png", (i-1)*30+j), (1280,720)).unwrap();
+			plot::default_graph(&internet, &internet.router.field_dimensions, &format!("target/images/{:0>6}.png", (i-1)*30+_j), (1280,720)).unwrap();
 		}
 	}
 	//internet.gen_routing_plot(&format!("target/images/{:0>6}.png", i/100), (500, 500)).expect("Failed to output image");
+	internet.node_mut(8).unwrap().action(NodeAction::Traverse(7, 1000));
+	internet.tick(1000, rng);
 
 	let stdin = io::stdin();
 	let split_regex = fancy_regex::Regex::new(r#"((?<=")[^"]*(?=")|[^" ]+)"#).unwrap();
@@ -131,12 +133,6 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>, rng: &mut 
 						} else { Err("node: connect: requires InternetID to bootstrap off of")? }
 					} else { Err("node: connect: requires a NodeID to establish secure connection")? }
 				},
-				// Test a remote node
-				/* Some(&"test") => {
-					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
-						node.action(NodeAction::TestNode(remote_node_id, 1000).gen_condition(NodeActionCondition::Session(remote_node_id)));
-					}
-				} */
 				Some(&"bootstrap") | Some(&"boot") => {
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
 						if let Some(Ok(remote_net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
@@ -144,11 +140,17 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>, rng: &mut 
 							node.action(NodeAction::Bootstrap(remote_node_id, remote_net_id));
 						} else { Err("node: bootstrap: requires InternetID to bootstrap off of")? }
 					} else { Err("node: bootstrap: requires a NodeID to establish secure connection")? }
-				}
-				
-				Some(&"info") => {
+				},
+				Some(&"print") => {
 					println!("Node: {:#?}", internet.node(net_id).ok_or("node: info: No node matches this InternetID")?);
-				}
+				},
+				Some(&"traverse") | Some(&"tv") => {
+					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
+						if let Some(Ok(data)) = command.next().map(|s|s.parse::<u64>()) {
+							node.action(NodeAction::Traverse(remote_node_id, data));
+						} else { Err("node: traverse: data must be u64")? }
+					} else { Err("node: traverse: requires a NodeID to send to")? }
+				},
 				Some(_) => Err(format!("node: unknown node command: {:?}", input[2]))?,
 				None => Err(format!("node: requires subcommand"))?
 			}
