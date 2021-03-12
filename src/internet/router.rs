@@ -53,6 +53,9 @@ impl InternetRouter {
 			packet_map: Default::default(),
 		}
 	}
+	pub fn add_node(&mut self, net_id: InternetID, rng: &mut impl Rng) {
+		self.node_map.entry(net_id).or_insert(RouterNode::random(net_id, &self.field_dimensions, rng));
+	}
 	pub fn add_packets(&mut self, packets: PacketVec, rng: &mut impl Rng) {
 		for packet in packets {
 			let dest = self.node_map.entry(packet.dest_addr).or_insert(RouterNode::random(packet.dest_addr, &self.field_dimensions, rng));

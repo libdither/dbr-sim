@@ -61,7 +61,10 @@ impl<CN: CustomNode> InternetSim<CN> {
 		}
 	}
 	pub fn lease(&self) -> InternetID { self.nodes.len() as InternetID }
-	pub fn add_node(&mut self, node: CN) { self.nodes.insert(node.net_id(), node); } 
+	pub fn add_node(&mut self, node: CN, rng: &mut impl Rng) {
+		self.router.add_node(node.net_id(), rng);
+		self.nodes.insert(node.net_id(), node);
+	}
 	pub fn del_node(&mut self, net_id: InternetID) { self.nodes.remove(&net_id); }
 	pub fn node_mut(&mut self, net_id: InternetID) -> Option<&mut CN> { self.nodes.get_mut(&net_id) }
 	pub fn node(&self, net_id: InternetID) -> Option<&CN> { self.nodes.get(&net_id) }
