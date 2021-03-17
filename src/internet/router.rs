@@ -77,7 +77,7 @@ impl InternetRouter {
 	pub fn tick_node(&mut self, destination: InternetID) -> PacketVec {
 		if let Some(packets) = self.packet_map.get_mut(&destination) {
 			packets.iter_mut().for_each(|item| item.1 -= 1); // Decrement ticks
-
+			// Filter out packets that should be passed
 			packets.drain_filter(|x| x.1 <= 0).map(|x| x.0).collect()
 		} else {
 			return PacketVec::new();

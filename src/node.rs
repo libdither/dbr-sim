@@ -88,10 +88,9 @@ pub enum NodeAction {
 	RequestRouteCoord(NodeID),
 	/// Establishes Routed session with remote NodeID
 	/// Looks up remote node's RouteCoord on DHT and runs CalculateRoute after RouteCoord is received
-	ConnectRouted(NodeID),
-	/// Calculates and Attempts to establish a layered connection to NodeID
-	/// RouteCoord of NodeID must be known or this action will error
-	CalculateRoute(NodeID),
+	/// * `usize`: Number of intermediate nodes to route through
+	/// * `f64`: Random intermediate offset (high offset is more anonymous but less efficient, very high offset is random routing strategy)
+	ConnectRouted(NodeID, usize),
 	/// Send specific packet to node
 	Packet(NodeID, NodePacket),
 	/// Establish a dynamic routed connection
@@ -254,6 +253,7 @@ impl Node {
 				let direct_nodes = self.node_list.iter().map(|s|*s.1).collect::<Vec<NodeID>>();
 				self.peer_list = direct_nodes.iter().filter_map(|node_id| {
 					let remote = self.remote(node_id).unwrap();
+					// Decides whether remote should be added to peer list
 					if let Some(route_coord) = remote.is_viable_peer(self_route_coord) { Some((*node_id, route_coord)) } else { None }
 				}).take(TARGET_PEER_COUNT).collect();
 				
@@ -287,21 +287,29 @@ impl Node {
 					out_actions.push(NodeAction::RequestRouteCoord(remote_node_id));
 					out_actions.push(NodeAction::Traverse(remote_node_id, data).gen_condition(NodeActionCondition::RemoteRouteCoord(remote_node_id)));
 				}
-				//let remote = self.remote(&remote_node_id)?.route_coord.ok_or(NodeError::NoRemoteRouteCoord { remote: remote_node_id })?;
 			},
 			NodeAction::RequestRouteCoord(remote_node_id) => {
 				outgoing.push(InternetPacket::gen_request(self.net_id, InternetRequest::RouteCoordDHTRead(remote_node_id)));
 			},
-			NodeAction::ConnectRouted(remote_node_id) => {
-				// Send DHT Request
-				outgoing.push(InternetPacket::gen_request(self.net_id, InternetRequest::RouteCoordDHTRead(remote_node_id)));
-				// Run action when DHT responds
-				out_actions.push(NodeAction::CalculateRoute(remote_node_id).gen_condition(NodeActionCondition::RemoteRouteCoord(remote_node_id)));
+			NodeAction::ConnectRouted(remote_node_id, hops) => {
+				let self_route_coord = self.route_coord.ok_or(NodeError::NoCalculatedRouteCoord)?;
+				// Check if Remote Route Coord was allready requested
+				if let Ok(Some(remote_route_coord)) = self.remote(&remote_node_id).map(|n|n.route_coord) {
+					let self_route_coord = self_route_coord.map(|s|s as f64);
+					let remote_route_coord = remote_route_coord.map(|s|s as f64);
+					let diff = (remote_route_coord - self_route_coord) / hops as f64;
+					let mut routes = Vec::with_capacity(hops);
+					for i in 1..hops {
+						routes.push(self_route_coord + diff * i as f64);
+					}
+					println!("Routes: {:?}", routes);
+					self.routed_connect(remote_node_id, outgoing);
+					//self.remote_mut(&remote_node_id)?.connect_routed(routes);
+				} else { // Otherwise, Request it and await Condition for next ConnectRouted
+					out_actions.push(NodeAction::RequestRouteCoord(remote_node_id));
+					out_actions.push(NodeAction::ConnectRouted(remote_node_id, hops).gen_condition(NodeActionCondition::RemoteRouteCoord(remote_node_id)));
+				}
 			},
-			NodeAction::CalculateRoute(remote_node_id) => {
-				let _self_route_coord = self.route_coord.ok_or(NodeError::NoCalculatedRouteCoord)?;
-				let _remote_route_coord = self.remote(&remote_node_id)?.route_coord.ok_or(NodeError::NoCalculatedRouteCoord)?;
-			}
 			NodeAction::Packet(remote_node_id, ref packet) => {
 				self.remote(&remote_node_id)?.add_packet(packet.clone(), outgoing)?;
 			},
@@ -386,7 +394,7 @@ impl Node {
 				// Locate nearest peers to requester_route_coord
 				
 				// Send WantPing packet to first num_requests of those peers
-				let want_ping_packet = NodePacket::WantPing(return_node_id, self.remote(&return_node_id)?.session()?.return_net_id);
+				let want_ping_packet = NodePacket::WantPing(return_node_id, self.remote(&return_node_id)?.session()?.direct()?.net_id);
 				for node_id in closest_nodes {
 					let remote = self.remote(&node_id)?;
 					if remote.node_id != return_node_id {
@@ -404,7 +412,7 @@ impl Node {
 				if let Ok(_request_session) = request_remote.session() { // If session, ignore probably
 					return Ok(())
 				} else { // If no session, send request
-					if request_remote.handshake_pending.is_none() {
+					if request_remote.pending_session.is_none() {
 						self.action(NodeAction::Connect(requesting_node_id, requesting_net_id, vec![NodePacket::AcceptWantPing(return_node_id, distance_self_to_return)]));
 					}
 				}
@@ -455,17 +463,18 @@ impl Node {
 		//let self_node_id = self.node_id;
 		let self_ticks = self.ticks;
 		let remote = self.remotes.entry(dest_node_id).or_insert(RemoteNode::new(dest_node_id));
-		remote.handshake_pending = Some((session_id, self_ticks, initial_packets));
+		remote.pending_session = Some(Box::new((session_id, self_ticks, initial_packets)));
 		// TODO: public key encryption
 		let encryption = NodeEncryption::Handshake { recipient: dest_node_id, session_id, signer: self.node_id };
 		outgoing.push(encryption.package(dest_addr))
 	}
-	/* fn routed_connect(&mut self, dest_node_id: NodeID, initial_packets: Vec<NodePacket>, outgoing: &mut PacketVec) {
+	// Create multiple Routed Sessions that sequentially resolve their pending_route fields as Traversal Packets are acknowledged
+	fn routed_connect(&mut self, dest_node_id: NodeID, outgoing: &mut PacketVec) {
 		/*let session_id: SessionID = rand::random();
 		let remote = self.remotes.entry(dest_node_id).or_insert(RemoteNode::new(dest_node_id));
-		remote.handshake_pending = Some((session_id, usize::MAX, initial_packets));*/
+		remote.pending_session = Some((session_id, usize::MAX, initial_packets));*/
 
-	} */
+	}
 	/// Parses handshakes, acknowledgments and sessions, Returns Some(remote_net_id, packet_to_parse) if session or handshake finished
 	fn parse_packet(&mut self, received_packet: InternetPacket, outgoing: &mut PacketVec) -> Result<Option<(NodeID, NodePacket)>, NodeError> {
 		if received_packet.dest_addr != self.net_id { return Err(NodeError::InvalidNetworkRecipient { from: received_packet.src_addr, intended_dest: received_packet.dest_addr }) }
@@ -494,10 +503,10 @@ impl Node {
 			NodeEncryption::Handshake { recipient, session_id, signer } => {
 				if recipient != self.node_id { Err(RemoteNodeError::UnknownAckRecipient { recipient })?; }
 				let remote = self.remotes.entry(signer).or_insert(RemoteNode::new(signer));
-				if remote.handshake_pending.is_some() {
-					if self_node_id < remote.node_id { remote.handshake_pending = None }
+				if remote.pending_session.is_some() {
+					if self_node_id < remote.node_id { remote.pending_session = None }
 				}
-				let mut session = RemoteSession::from_id(session_id, return_net_id);
+				let mut session = RemoteSession::from_address(session_id, return_net_id);
 				let return_ping_id = session.tracker.gen_ping(self_ticks);
 				remote.session = Some(session);
 				outgoing.push(NodeEncryption::Acknowledge { session_id, acknowledger: recipient, return_ping_id }.package(return_net_id));
@@ -507,10 +516,12 @@ impl Node {
 			},
 			NodeEncryption::Acknowledge { session_id, acknowledger, return_ping_id } => {
 				let mut remote = self.remote_mut(&acknowledger)?;
-				if let Some((pending_session_id, time_sent_handshake, packets_to_send)) = remote.handshake_pending.take() {
+				if let Some(boxed_pending) = remote.pending_session.take() {
+					let (pending_session_id, time_sent_handshake, packets_to_send) = *boxed_pending;
+					
 					if pending_session_id == session_id {
 						// Create session and acknowledge out-of-tracker ping
-						let mut session = RemoteSession::from_id(session_id, return_net_id);
+						let mut session = RemoteSession::from_address(session_id, return_net_id);
 						let ping_id = session.tracker.gen_ping(time_sent_handshake);
 						let distance = session.tracker.acknowledge_ping(ping_id, self_ticks)?;
 						remote.session = Some(session); // update remote
@@ -547,7 +558,7 @@ impl Node {
 	}
 	fn calculate_route_coord(&mut self) -> Result<RouteCoord, NodeError> {
 		let route_coord = self.deux_ex_data.ok_or(NodeError::Other(anyhow!("no deus ex machina data")))?;
-		log::debug!("NodeID({}) Assigned RouteCoord({})", self.node_id, route_coord);
+		log::debug!("NodeID({}) Calculated RouteCoord({})", self.node_id, route_coord);
 		return Ok(route_coord);
 
 		/* // TODO: Refactor this implementation of multidimensional scaling

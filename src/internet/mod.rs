@@ -18,7 +18,7 @@ use crate::node::{Node, NodeID, RouteCoord};
 pub const FIELD_DIMENSIONS: (Range<i32>, Range<i32>) = (-320..320, -130..130);
 
 pub type InternetID = u128;
-pub type PacketVec = SmallVec<[InternetPacket; 8]>;
+pub type PacketVec = SmallVec<[InternetPacket; 32]>;
 
 #[derive(Debug)]
 pub enum InternetRequest {
@@ -129,10 +129,10 @@ impl GraphPlottable for InternetSim<Node> {
 		let edges = self.nodes.iter().enumerate().map(|(_, (net_id, node))|{
 			node.node_list.iter().filter_map(move |(_,&remote_id)|{
 				// Get Net ID and set color based on peerage
-				node.remotes[&remote_id].session().map(|s|{
+				node.remotes[&remote_id].session().ok().map(|s| s.direct().ok().map(|d|{
 					let color = if node.peer_list.contains_left(&remote_id) { RGBColor(0,0,0) } else { RGBColor(255,255,255) };
-					(s.return_net_id, color)
-				}).ok()
+					(d.net_id, color)
+				})).flatten()
 
 			}).map(move |(remote_net_id, color)|{
 				Element::Edge {

@@ -15,7 +15,7 @@ use std::io::{self, prelude::*};
 pub mod internet;
 use internet::{InternetID, InternetSim, CustomNode};
 pub mod node;
-use node::{Node, NodeAction, NodeID, NodeEncryption};
+use node::{Node, NodeAction, NodeID};
 pub mod plot;
 use rand::SeedableRng;
 
@@ -27,7 +27,7 @@ fn main() {
 	let rng = &mut rand::rngs::SmallRng::seed_from_u64(0);
 	let mut internet = InternetSim::new();
 
-	for i in 0..20 {
+	for i in 0..3 {
 		let node2 = Node::new(i, internet.lease());
 		internet.add_node(node2, rng);
 	}
@@ -38,14 +38,15 @@ fn main() {
 			node.action(NodeAction::Bootstrap(0,0));
 		} else { log::error!("Node at InternetID({}) doesn't exist", i)}
 		for _j in 0..snapshots_per_boot {
-			internet.tick(300/snapshots_per_boot, rng);
+			internet.tick(4000/snapshots_per_boot, rng);
 			//plot::default_graph(&internet, &internet.router.field_dimensions, &format!("target/images/{:0>6}.png", (i-1)*snapshots_per_boot+_j), (1280,720)).unwrap();
 		}
 	}
-	internet.tick(3000, rng);
+	internet.tick(4000, rng);
 	plot::default_graph(&internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (1280, 720)).expect("Failed to output image");
-	internet.node_mut(8).unwrap().action(NodeAction::Traverse(7, 1000));
-	internet.tick(1000, rng);
+	//internet.node_mut(8).unwrap().action(NodeAction::Traverse(7, 1000));
+	//internet.node_mut(8).unwrap().action(NodeAction::ConnectRouted(19, 3)); 
+	//internet.tick(1000, rng);
 
 	let stdin = io::stdin();
 	let split_regex = fancy_regex::Regex::new(r#"((?<=")[^"]*(?=")|[^" ]+)"#).unwrap();
@@ -153,6 +154,11 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>, rng: &mut 
 						} else { Err("node: traverse: data must be u64")? }
 					} else { Err("node: traverse: requires a NodeID to send to")? }
 				},
+				Some(&"route") => {
+					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
+						node.action(NodeAction::ConnectRouted(remote_node_id, 3));
+					} else { Err("node: route: requires a NodeID to create route to")? }
+				}
 				Some(_) => Err(format!("node: unknown node command: {:?}", input[2]))?,
 				None => Err(format!("node: requires subcommand"))?
 			}

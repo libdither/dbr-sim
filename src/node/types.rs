@@ -1,10 +1,11 @@
 use crate::internet::{InternetID, InternetPacket, PacketVec};
 
-pub use crate::node::session::{RemoteSession, SessionError, SessionType};
+pub use crate::node::session::{RemoteSession, SessionError, SessionType, RoutedSession};
 use crate::node::session::PingID;
 
 use thiserror::Error;
 use nalgebra::Point2;
+use smallvec::SmallVec;
 
 /// Hash uniquely identifying a node (represents the Multihash of the node's Public Key)
 pub type NodeID = u32;
@@ -55,8 +56,6 @@ pub enum NodePacket {
 	/// * `u64`: Distance to that node
 	AcceptWantPing(NodeID, u64),
 
-	
-
 	/// Packet Traversal
 	/// Represents a network traversal packet, It is routed through the network via it's RouteCoord
 	Traverse(RouteCoord, Box<NodeEncryption>),
@@ -64,23 +63,9 @@ pub enum NodePacket {
 	/// Request a session that is routed through node to another RouteCoordinate
 	RoutedSessionRequest(RouteCoord),
 	RoutedSessionAccept(),
-
-	/* /// Request to establish a peer as an intermediate node
-	/// RouteCoord: Area where intermediate node is requested
-	/// u64: Radius of request (how far away can request be deviated)
-	/// RouteCoord: Requester's coordinates
-	/// NodeID: Requester's NodeID (signed)
-	//RouteRequest(RouteCoord, u64, RouteCoord, NodeID),
-	/// Node that accepts request returns this and a RouteSession is established
-	/// RouteCoord: Accepting node's coordinates
-	/// NodeID: Accepting node's public key (signed and encrypted with requesting node's public key)
-	// RouteAcccept(RouteCoord, NodeID), */
 }
 pub const NUM_NODE_PACKETS: usize = 10;
 
-impl NodePacket {
-	pub fn encrypt(self, session_id: SessionID) -> NodeEncryption { NodeEncryption::Session { session_id, packet: self } }
-}
 #[derive(Error, Debug)]
 pub enum RemoteNodeError {
     #[error("There is no active session with the node: {node_id:?}")]
@@ -96,9 +81,15 @@ pub enum RemoteNodeError {
 }
 #[derive(Debug)]
 pub struct RemoteNode {
-	pub node_id: NodeID, // The ID of the remote node
+	// The ID of the remote node
+	pub node_id: NodeID,
+	// Received Route Coordinate of the Remote Node
 	pub route_coord: Option<RouteCoord>,
-	pub handshake_pending: Option<(SessionID, usize, Vec<NodePacket>)>, // is Some(pending_session_id, time_sent_handshake, packets_to_send)
+	// If handshake is pending: Some(pending_session_id, time_sent_handshake, packets_to_send)
+	pub pending_session: Option<Box< (SessionID, usize, Vec<NodePacket>) >>,
+	// If route is pending: Some(search location route coords, NodeIDs found willing to create RoutedSessions in search location)
+	pub pending_route: Option<Vec<(RouteCoord, Option<NodeID>)>>,
+	// Contains Session details if session is connected
 	pub session: Option<RemoteSession>, // Session object, is None if no connection is active
 }
 impl RemoteNode {
@@ -106,12 +97,13 @@ impl RemoteNode {
 		Self {
 			node_id,
 			route_coord: None,
-			handshake_pending: None,
+			pending_session: None,
+			pending_route: None,
 			session: None,
 		}
 	}
 	pub fn session_active(&self) -> bool {
-		self.session.is_some() && self.handshake_pending.is_none()
+		self.session.is_some() && self.pending_session.is_none()
 	}
 	pub fn session(&self) -> Result<&RemoteSession, RemoteNodeError> {
 		self.session.as_ref().ok_or( RemoteNodeError::NoSessionError { node_id: self.node_id } )
@@ -124,13 +116,18 @@ impl RemoteNode {
 		Ok(outgoing.push(self.session()?.gen_packet(packet)?))
 	}
 	/// Check if a peer is viable or not
+	// TODO: Create condition that rejects nodes if there is another closer node located in a specific direction
 	pub fn is_viable_peer(&self, _self_route_coord: RouteCoord) -> Option<RouteCoord> {
-		if let (Some(route_coord), Some(_)) = (self.route_coord, &self.session) {
+		if let (Some(route_coord), Some(session)) = (self.route_coord, &self.session) {
 			//let avg_dist = session.tracker.dist_avg;
 			//let route_dist = nalgebra::distance(route_coord.map(|s|s as f64), self_route_coord.map(|s|s as f64));
-			return Some(route_coord.clone());
-			//if self.session.is_some() && ()
+			if session.direct().is_ok() {
+				return Some(route_coord.clone());
+			} else { None }
 		} else { None }
+	}
+	pub fn start_routed(&mut self, intermediate_locations: Vec<RouteCoord>) {
+		//self.pending_route = Some(Vec<(RouteCoord, bool)>)
 	}
 }
 
@@ -147,6 +144,8 @@ pub enum NodeEncryption {
 	Session { session_id: SessionID, packet: NodePacket },
 	// Asymmetrically Encrypted notification (Data and Sender are encrypted with recipient's public key)
 	Traversal { recipient: NodeID, data: u64, sender: NodeID },
+	// Signed Route Request, treated as a Traversal type but requests Routed Session from the remote
+	Locate { location: RouteCoord, requester: NodeID }
 }
 
 impl NodeEncryption {
@@ -160,5 +159,9 @@ impl NodeEncryption {
 	}
 	pub fn unpackage(packet: &InternetPacket) -> Result<Self, serde_json::Error> {
 		serde_json::from_slice(&packet.data)
+	}
+	pub fn wrap_traverse(self, session_id: SessionID, route_coord: RouteCoord) -> NodeEncryption {
+		let packet = NodePacket::Traverse(route_coord, Box::new(self));
+		NodeEncryption::Session { session_id, packet }
 	}
 }
