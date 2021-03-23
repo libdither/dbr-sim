@@ -9,11 +9,13 @@ extern crate thiserror;
 extern crate derivative;
 #[macro_use]
 extern crate anyhow;
+#[macro_use]
+extern crate bitflags;
 
 use std::io::{self, prelude::*};
 
 pub mod internet;
-use internet::{InternetID, InternetSim, CustomNode};
+use internet::{NetAddr, InternetSim, CustomNode};
 pub mod node;
 use node::{Node, NodeAction, NodeID};
 pub mod plot;
@@ -34,9 +36,9 @@ fn main() {
 
 	let snapshots_per_boot = 10;
 	for i in 1..(internet.nodes.len()+0) {
-		if let Some(node) = internet.node_mut(i as InternetID) {
+		if let Some(node) = internet.node_mut(i as NetAddr) {
 			node.action(NodeAction::Bootstrap(0,0));
-		} else { log::error!("Node at InternetID({}) doesn't exist", i)}
+		} else { log::error!("Node at NetAddr({}) doesn't exist", i)}
 		for _j in 0..snapshots_per_boot {
 			internet.tick(4000/snapshots_per_boot, rng);
 			//plot::default_graph(&internet, &internet.router.field_dimensions, &format!("target/images/{:0>6}.png", (i-1)*snapshots_per_boot+_j), (1280,720)).unwrap();
@@ -78,8 +80,8 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>, rng: &mut 
 		},
 		// Removing Nodes
 		Some(&"del") => {
-			if let Some(Ok(net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
-				internet.del_node(net_id);
+			if let Some(Ok(net_addr)) = command.next().map(|s|s.parse::<NetAddr>()) {
+				internet.del_node(net_addr);
 			}
 		},
 		Some(&"tick") => {
@@ -100,13 +102,13 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>, rng: &mut 
 		Some(&"list") => {
 			if let Some(subcommand) = command.next() {
 				match *subcommand {
-					"directs" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.node_list)),
+					"directs" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.direct_sorted)),
 					"peers" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.peer_list)),
 					"sessions" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.sessions)),
 					"routes" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.route_coord)),
-					"router" => internet.router.node_map.iter().for_each(|(net_id,lc)| println!("{}: {:?}", net_id, lc)),
+					"router" => internet.router.node_map.iter().for_each(|(net_addr,lc)| println!("{}: {:?}", net_addr, lc)),
 					"node" => {
-						if let Some(node_id) = command.next().map(|s|s.parse::<InternetID>().ok()).flatten() {
+						if let Some(node_id) = command.next().map(|s|s.parse::<NetAddr>().ok()).flatten() {
 							println!("{:#?}", internet.node(node_id));
 						}
 					}
@@ -117,40 +119,40 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>, rng: &mut 
 			}
 		},
 		Some(&"print") => {
-			if let Some(Ok(net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
-				if let Some(node) = internet.node(net_id) { println!("{:#?}", node) }
-				else { Err("print: No node currently leases this InternetID")? };
-			} else { Err("print: invalid InternetID format")? };
+			if let Some(Ok(net_addr)) = command.next().map(|s|s.parse::<NetAddr>()) {
+				if let Some(node) = internet.node(net_addr) { println!("{:#?}", node) }
+				else { Err("print: No node currently leases this NetAddr")? };
+			} else { Err("print: invalid NetAddr format")? };
 		},
 		// Node subcommand
 		Some(&"node") => {
-			let net_id = if let Some(Ok(net_id)) = command.next().map(|s|s.parse::<InternetID>()) { net_id } else { return Err("node: must pass valid InternetID as second argument to identify specific node")? };
-			let node = if let Some(node) = internet.node_mut(net_id) { node } else { return Err("node: no node at that network address")? };
+			let net_addr = if let Some(Ok(net_addr)) = command.next().map(|s|s.parse::<NetAddr>()) { net_addr } else { return Err("node: must pass valid NetAddr as second argument to identify specific node")? };
+			let node = if let Some(node) = internet.node_mut(net_addr) { node } else { return Err("node: no node at that network address")? };
 			match command.next() {
 				// Bootstrap a node onto the network
 				Some(&"connect") | Some(&"conn") => {
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
-						if let Some(Ok(remote_net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
-							println!("Connecting NodeID({:?}) to NodeID({:?}), InternetID({:?}))", node.node_id, remote_node_id, remote_net_id);
-							node.action(NodeAction::Connect(remote_node_id, remote_net_id, vec![]));
-						} else { Err("node: connect: requires InternetID to bootstrap off of")? }
+						if let Some(Ok(remote_net_addr)) = command.next().map(|s|s.parse::<NetAddr>()) {
+							println!("Connecting NodeID({:?}) to NodeID({:?}), NetAddr({:?}))", node.node_id, remote_node_id, remote_net_addr);
+							node.action(NodeAction::Connect(remote_node_id, remote_net_addr, vec![]));
+						} else { Err("node: connect: requires NetAddr to bootstrap off of")? }
 					} else { Err("node: connect: requires a NodeID to establish secure connection")? }
 				},
 				Some(&"bootstrap") | Some(&"boot") => {
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
-						if let Some(Ok(remote_net_id)) = command.next().map(|s|s.parse::<InternetID>()) {
-							println!("Bootstrapping NodeID({:?}) to NodeID({:?}), InternetID({:?}))", node.node_id, remote_node_id, remote_net_id);
-							node.action(NodeAction::Bootstrap(remote_node_id, remote_net_id));
-						} else { Err("node: bootstrap: requires InternetID to bootstrap off of")? }
+						if let Some(Ok(remote_net_addr)) = command.next().map(|s|s.parse::<NetAddr>()) {
+							println!("Bootstrapping NodeID({:?}) to NodeID({:?}), NetAddr({:?}))", node.node_id, remote_node_id, remote_net_addr);
+							node.action(NodeAction::Bootstrap(remote_node_id, remote_net_addr));
+						} else { Err("node: bootstrap: requires NetAddr to bootstrap off of")? }
 					} else { Err("node: bootstrap: requires a NodeID to establish secure connection")? }
 				},
 				Some(&"print") => {
-					println!("Node: {:#?}", internet.node(net_id).ok_or("node: info: No node matches this InternetID")?);
+					println!("Node: {:#?}", internet.node(net_addr).ok_or("node: info: No node matches this NetAddr")?);
 				},
-				Some(&"traverse") | Some(&"tv") => {
+				Some(&"notify") | Some(&"nt") => {
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
 						if let Some(Ok(data)) = command.next().map(|s|s.parse::<u64>()) {
-							node.action(NodeAction::Traverse(remote_node_id, data));
+							node.action(NodeAction::Notify(remote_node_id, data));
 						} else { Err("node: traverse: data must be u64")? }
 					} else { Err("node: traverse: requires a NodeID to send to")? }
 				},

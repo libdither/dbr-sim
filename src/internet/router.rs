@@ -2,7 +2,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use crate::internet::{InternetID, InternetPacket, PacketVec};
+use crate::internet::{NetAddr, InternetPacket, PacketVec};
 
 const VARIANCE: isize = 2;
 use nalgebra::Point2;
@@ -15,13 +15,13 @@ pub trait LatencyCalculator: Default {
 } */
 #[derive(Debug)]
 pub struct RouterNode {
-	pub uuid: InternetID,
+	pub uuid: NetAddr,
 	pub variance: isize,
 	pub position: Point2<f32>,
-	pub distance_cache: HashMap<InternetID, isize>,
+	pub distance_cache: HashMap<NetAddr, isize>,
 }
 impl RouterNode {
-	fn random(uuid: InternetID, range: &(Range<i32>, Range<i32>), rng: &mut impl Rng) -> Self {
+	fn random(uuid: NetAddr, range: &(Range<i32>, Range<i32>), rng: &mut impl Rng) -> Self {
 		// let radius = AREA/2;
 		Self {
 			uuid,
@@ -30,7 +30,7 @@ impl RouterNode {
 			distance_cache: HashMap::new(),
 		}
 	}
-	fn generate(&mut self, other_uuid: InternetID, other_position: Point2<f32>, rng: &mut impl Rng) -> isize {
+	fn generate(&mut self, other_uuid: NetAddr, other_position: Point2<f32>, rng: &mut impl Rng) -> isize {
 		let dist = *self.distance_cache.entry(other_uuid).or_insert(nalgebra::distance(&self.position, &other_position) as isize);
 		dist as isize + rng.gen_range(-self.variance..self.variance)
 	}
@@ -41,9 +41,9 @@ impl RouterNode {
 pub struct InternetRouter {
 	pub field_dimensions: (Range<i32>, Range<i32>),
 	/// Map linking Node pairs to speed between them (supports differing 2-way speeds)
-	pub node_map: HashMap<InternetID, RouterNode>,
+	pub node_map: HashMap<NetAddr, RouterNode>,
 	/// Map linking destination `Node`s to inbound packets
-	pub packet_map: HashMap<InternetID, Vec<(InternetPacket, isize)>>,
+	pub packet_map: HashMap<NetAddr, Vec<(InternetPacket, isize)>>,
 }
 impl InternetRouter {
 	pub fn new(field_dimensions: (Range<i32>, Range<i32>)) -> Self {
@@ -53,8 +53,8 @@ impl InternetRouter {
 			packet_map: Default::default(),
 		}
 	}
-	pub fn add_node(&mut self, net_id: InternetID, rng: &mut impl Rng) {
-		self.node_map.entry(net_id).or_insert(RouterNode::random(net_id, &self.field_dimensions, rng));
+	pub fn add_node(&mut self, net_addr: NetAddr, rng: &mut impl Rng) {
+		self.node_map.entry(net_addr).or_insert(RouterNode::random(net_addr, &self.field_dimensions, rng));
 	}
 	pub fn add_packets(&mut self, packets: PacketVec, rng: &mut impl Rng) {
 		for packet in packets {
@@ -74,7 +74,7 @@ impl InternetRouter {
 			}
 		}
 	}
-	pub fn tick_node(&mut self, destination: InternetID) -> PacketVec {
+	pub fn tick_node(&mut self, destination: NetAddr) -> PacketVec {
 		if let Some(packets) = self.packet_map.get_mut(&destination) {
 			packets.iter_mut().for_each(|item| item.1 -= 1); // Decrement ticks
 			// Filter out packets that should be passed
