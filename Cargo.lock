@@ -341,9 +341,11 @@ dependencies = [
  "rand",
  "serde",
  "serde_json",
+ "slotmap",
  "smallvec",
  "ta",
  "thiserror",
+ "vpsearch",
 ]
 
 [[package]]
@@ -1131,6 +1133,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "slotmap"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab3003725ae562cf995f3dc82bb99e70926e09000396816765bb6d7adbe740b1"
+dependencies = [
+ "version_check",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1231,6 +1242,15 @@ name = "version_check"
 version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5a972e5669d67ba988ce3dc826706fb0a8b01471c088cb0b6110b805cc36aed"
+
+[[package]]
+name = "vpsearch"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98657e55d93988f2a6780e2548ef4fde753c90b0ac1f91149e30eef68abf4260"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "walkdir"

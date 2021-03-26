@@ -2,22 +2,19 @@
 
 #![allow(non_upper_case_globals)]
 
-use crate::Node;
+use super::{RouteScalar, SessionID, NodeID, NodePacket, Node, NodeError, NetAddr, RouteCoord, NodeEncryption, InternetPacket, TraversalPacket};
+
 use std::{cmp::Reverse, collections::HashMap, mem::{Discriminant, discriminant}};
 
 use ta::{indicators::{SimpleMovingAverage, StandardDeviation}, Next};
 use thiserror::Error;
 use priority_queue::PriorityQueue;
 
-use crate::internet::{NetAddr, InternetPacket};
-use crate::node::{SessionID, NodeID, RouteScalar, RouteCoord, NodePacket, types::{NodeEncryption, NUM_NODE_PACKETS, TraversalPacket}};
-
-use super::NodeError;
-
 /// Number that uniquely identifies a ping request so that multiple Pings may be sent at the same time
 pub type PingID = u64;
 
 const MAX_PENDING_PINGS: usize = 25;
+pub const NUM_NODE_PACKETS: usize = 10;
 
 #[derive(Derivative)]
 #[derivative(Debug)]
@@ -190,7 +187,7 @@ impl RemoteSession {
 				let mut current_route_coord = routed_session.route_coord;
 				for session_id in routed_session.proxy_nodes.iter().rev() {
 					// Handle these errors
-					let remote = node.session_remote(session_id).unwrap();
+					let remote = node.remote(node.index_by_session_id(&session_id)?)?;
 					let origin_coord = remote.route_coord.unwrap();
 
 					let routed_packet = TraversalPacket::new(current_route_coord, encryption, Some(origin_coord));
@@ -198,18 +195,18 @@ impl RemoteSession {
 					current_route_coord = origin_coord;
 				}
 
-				let remote = 
-					if let Some(node) = node.peer_list.get_by_right(&current_route_coord) { node }
-					else { node.find_closest_peer(&current_route_coord).unwrap() };
-				remote.session()?.direct()?.net_addr
+				let node_idx = 
+					if let Some(node_idx) = node.peer_list.get_by_right(&current_route_coord) { *node_idx }
+					else { node.find_closest_peer(&current_route_coord)? };
+				node.remote(node_idx)?.session()?.direct()?.net_addr
 			}
 			SessionType::Traversed(traversed_session) => {
 				let route_coord = traversed_session.route_coord;
 				//let origin_route_coord = node.route_coord.unwrap();
-				let remote = 
-					if let Some(node) = node.peer_list.get_by_right(&route_coord) { node }
-					else { node.find_closest_peer(&route_coord).unwrap() };
-				remote.session()?.direct()?.net_addr
+				let node_idx = 
+					if let Some(node_idx) = node.peer_list.get_by_right(&route_coord) { *node_idx }
+					else { node.find_closest_peer(&route_coord)? };
+				node.remote(node_idx)?.session()?.direct()?.net_addr
 			}
 		};
 

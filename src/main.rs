@@ -1,4 +1,6 @@
 #![feature(drain_filter)]
+#![feature(backtrace)]
+#![feature(try_blocks)]
 
 #[macro_use]
 extern crate serde;
@@ -11,6 +13,8 @@ extern crate derivative;
 extern crate anyhow;
 #[macro_use]
 extern crate bitflags;
+#[macro_use]
+extern crate slotmap;
 
 use std::io::{self, prelude::*};
 

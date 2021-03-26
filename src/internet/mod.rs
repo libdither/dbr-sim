@@ -127,7 +127,7 @@ impl GraphPlottable for InternetSim<Node> {
 		let node_idx_map = &self.router.node_map.iter().enumerate().map(|(idx,(&id,_))|(id,idx)).collect::<HashMap<NetAddr,usize>>();
 
 		let edges = self.nodes.iter().enumerate().map(|(_, (net_addr, node))|{
-			node.direct_sorted.iter().filter_map(move |(_,remote)|{
+			node.remotes.iter().filter_map(move |(_,remote)|{
 				// Set color based on 
 				remote.session().ok().map(|s|{
 					s.direct().ok().map(|d|{
