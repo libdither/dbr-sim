@@ -446,10 +446,11 @@ impl Node {
 
 				// Send WantPing packet to first num_requests of those peers
 				let want_ping_packet = NodePacket::WantPing(return_node_id, self.remote(return_node_idx)?.session()?.direct()?.net_addr);
+				println!("Selecting Among Closest Nodes: {:?}", closest_nodes);
 				for node_idx in closest_nodes {
 					//let remote = self.remote(&node_id)?;
 					if self.remote(node_idx)?.node_id != return_node_id {
-						self.send_packet(return_node_idx, want_ping_packet.clone(), outgoing)?;
+						self.send_packet(node_idx, want_ping_packet.clone(), outgoing)?;
 					}
 				}
 			}
@@ -476,10 +477,11 @@ impl Node {
 				let self_node_count = self.direct_sorted.len();
 				self.send_packet(return_node_idx, NodePacket::ExchangeInfo(self_route_coord, self_node_count, avg_dist), outgoing)?;
 			}
-			NodePacket::PeerNotify(_rank, route_coord, peer_count, peer_distance) => {
+			NodePacket::PeerNotify(rank, route_coord, peer_count, peer_distance) => {
 				// Record peer rank
+				//let node_idx = self.index_by_session_id(session_id: &SessionID)
 				//let session = self.remote_mut(return_node_idx)?.session_mut()?;
-				//session.record_peer_notify(rank);
+				self.remote_mut(return_node_idx)?.session_mut()?.direct_mut()?.record_peer_notify(rank);
 				// Update remote
 				self.action(NodeAction::UpdateRemote(return_node_id, Some(route_coord), peer_count, peer_distance));
 			}
