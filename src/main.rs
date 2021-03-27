@@ -19,43 +19,44 @@ extern crate slotmap;
 use std::io::{self, prelude::*};
 
 pub mod internet;
-use internet::{NetAddr, InternetSim, CustomNode};
+use internet::{NetAddr, NetSim, CustomNode};
 pub mod node;
 use node::{Node, NodeAction, NodeID};
 pub mod plot;
 use rand::SeedableRng;
 
-fn main() {
+fn main() -> anyhow::Result<()> {
 	env_logger::init();
 	println!("Hello, Network!");
 	let _ = std::fs::create_dir_all("target/images");
 
 	let rng = &mut rand::rngs::SmallRng::seed_from_u64(0);
-	let mut internet = InternetSim::new();
+	let mut internet = NetSim::new();
 
-	for i in 0..3 {
+	for i in 0..20 {
 		let node2 = Node::new(i, internet.lease());
 		internet.add_node(node2, rng);
 	}
 
 	let snapshots_per_boot = 10;
 	for i in 1..(internet.nodes.len()+0) {
-		if let Some(node) = internet.node_mut(i as NetAddr) {
-			node.action(NodeAction::Bootstrap(0,0));
-		} else { log::error!("Node at NetAddr({}) doesn't exist", i)}
+		let node = internet.node_mut(i as NetAddr)?;
+		node.action(NodeAction::Bootstrap(0,0));
 		for _j in 0..snapshots_per_boot {
 			internet.tick(4000/snapshots_per_boot, rng);
-			//plot::default_graph(&internet, &internet.router.field_dimensions, &format!("target/images/{:0>6}.png", (i-1)*snapshots_per_boot+_j), (1280,720)).unwrap();
+			//plot::default_graph(&internet, &internet.router.field_dimensions, &format!("target/images/{:0>6}.png", (i-1)*snapshots_per_boot+_j), (1280,720))?;
 		}
 	}
 	internet.tick(4000, rng);
 	plot::default_graph(&internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (1280, 720)).expect("Failed to output image");
-	//internet.node_mut(8).unwrap().action(NodeAction::Traverse(7, 1000));
-	//internet.node_mut(8).unwrap().action(NodeAction::ConnectRouted(19, 3)); 
-	//internet.tick(1000, rng);
+	//internet.node_mut(1)?.action(NodeAction::ConnectRouted(19, 2));
+	internet.node_mut(1)?.action(NodeAction::ConnectTraversal(19));
+	//internet.node_mut(8)?.action(NodeAction::ConnectRouted(19, 3)); 
+	internet.tick(10000, rng);
+
 
 	let stdin = io::stdin();
-	let split_regex = fancy_regex::Regex::new(r#"((?<=")[^"]*(?=")|[^" ]+)"#).unwrap();
+	let split_regex = fancy_regex::Regex::new(r#"((?<=")[^"]*(?=")|[^" ]+)"#)?;
 
 	for line_result in stdin.lock().lines() {
 		if let Ok(line) = line_result {
@@ -68,10 +69,11 @@ fn main() {
 			
 		} else { println!("Could not read line from input"); }
 	}
+	Ok(())
 }
 
 use std::error::Error;
-fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>, rng: &mut impl rand::Rng) -> Result<(), Box<dyn Error>> {
+fn parse_command(internet: &mut NetSim<Node>, input: &Vec<&str>, rng: &mut impl rand::Rng) -> Result<(), Box<dyn Error>> {
 	let mut command = input.iter();
 	match command.next() {
 		// Adding Nodes
@@ -124,14 +126,13 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>, rng: &mut 
 		},
 		Some(&"print") => {
 			if let Some(Ok(net_addr)) = command.next().map(|s|s.parse::<NetAddr>()) {
-				if let Some(node) = internet.node(net_addr) { println!("{:#?}", node) }
-				else { Err("print: No node currently leases this NetAddr")? };
+				println!("{:#?}", internet.node(net_addr)?)
 			} else { Err("print: invalid NetAddr format")? };
 		},
 		// Node subcommand
 		Some(&"node") => {
 			let net_addr = if let Some(Ok(net_addr)) = command.next().map(|s|s.parse::<NetAddr>()) { net_addr } else { return Err("node: must pass valid NetAddr as second argument to identify specific node")? };
-			let node = if let Some(node) = internet.node_mut(net_addr) { node } else { return Err("node: no node at that network address")? };
+			let node = internet.node_mut(net_addr)?;
 			match command.next() {
 				// Bootstrap a node onto the network
 				Some(&"connect") | Some(&"conn") => {
@@ -151,7 +152,7 @@ fn parse_command(internet: &mut InternetSim<Node>, input: &Vec<&str>, rng: &mut 
 					} else { Err("node: bootstrap: requires a NodeID to establish secure connection")? }
 				},
 				Some(&"print") => {
-					println!("Node: {:#?}", internet.node(net_addr).ok_or("node: info: No node matches this NetAddr")?);
+					println!("Node: {:#?}", node);
 				},
 				Some(&"notify") | Some(&"nt") => {
 					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {

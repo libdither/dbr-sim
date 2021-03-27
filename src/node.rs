@@ -18,7 +18,7 @@ use session::{SessionError, RemoteSession};
 use remote::{RemoteNode, RemoteNodeError};
 pub use packet::{NodePacket, TraversalPacket, NodeEncryption};
 
-use crate::internet::{CustomNode, NetAddr, InternetPacket, PacketVec, InternetRequest};
+use crate::internet::{CustomNode, NetAddr, NetSimPacket, NetSimPacketVec, NetSimRequest};
 use crate::plot::GraphPlottable;
 
 use petgraph::{graphmap::DiGraphMap, graph::Graph};
@@ -26,6 +26,10 @@ use bimap::BiHashMap;
 use smallvec::SmallVec;
 use slotmap::SlotMap;
 use nalgebra::Point2;
+
+type InternetPacket = NetSimPacket<Node>;
+type PacketVec = NetSimPacketVec<Node>;
+type InternetRequest = NetSimRequest<Node>;
 
 #[derive(Debug, Clone)]
 /// A condition that should be satisfied before an action is executed
@@ -91,6 +95,9 @@ pub enum NodeAction {
 	Notify(NodeID, u64),
 	/// Send DHT request for Route Coordinate
 	RequestRouteCoord(NodeID),
+	/// Establish Traversed Session with remote NodeID
+	/// Looks up remote node's RouteCoord on DHT and enables Traversed Session
+	ConnectTraversal(NodeID),
 	/// Establishes Routed session with remote NodeID
 	/// Looks up remote node's RouteCoord on DHT and runs CalculateRoute after RouteCoord is received
 	/// * `usize`: Number of intermediate nodes to route through
@@ -181,7 +188,9 @@ pub struct Node {
 }
 impl CustomNode for Node {
 	type CustomNodeAction = NodeAction;
+	type CustomNodeUUID = NodeID;
 	fn net_addr(&self) -> NetAddr { self.net_addr }
+	fn unique_id(&self) -> Self::CustomNodeUUID { self.node_id }
 	fn tick(&mut self, incoming: PacketVec) -> PacketVec {
 		let mut outgoing = PacketVec::new();
 
@@ -337,10 +346,21 @@ impl Node {
 			NodeAction::RequestRouteCoord(remote_node_id) => {
 				outgoing.push(InternetPacket::gen_request(self.net_addr, InternetRequest::RouteCoordDHTRead(remote_node_id)));
 			}
+			NodeAction::ConnectTraversal(remote_node_id) => {
+				let (_, remote) = self.add_remote(remote_node_id)?;
+				if let Some(remote_route_coord) = remote.route_coord {
+					remote.pending_route = Some(vec![(remote_route_coord, None)]);
+				} else { // Otherwise, Request it and await Condition for next ConnectRouted
+					out_actions.push(NodeAction::RequestRouteCoord(remote_node_id));
+					out_actions.push(NodeAction::ConnectTraversal(remote_node_id).gen_condition(NodeActionCondition::RemoteRouteCoord(remote_node_id)));
+				}
+				
+			}
 			NodeAction::ConnectRouted(remote_node_id, hops) => {
 				let self_route_coord = self.route_coord.ok_or(NodeError::NoCalculatedRouteCoord)?;
 				// Check if Remote Route Coord was allready requested
-				if let Ok(Some(remote_route_coord)) = self.remote(self.index_by_node_id(&remote_node_id)?).map(|n|n.route_coord) {
+				let (_, remote) = self.add_remote(remote_node_id.clone())?;
+				if let Some(remote_route_coord) = remote.route_coord {
 					let self_route_coord = self_route_coord.map(|s|s as f64);
 					let remote_route_coord = remote_route_coord.map(|s|s as f64);
 					let diff = (remote_route_coord - self_route_coord) / hops as f64;
@@ -446,7 +466,6 @@ impl Node {
 
 				// Send WantPing packet to first num_requests of those peers
 				let want_ping_packet = NodePacket::WantPing(return_node_id, self.remote(return_node_idx)?.session()?.direct()?.net_addr);
-				println!("Selecting Among Closest Nodes: {:?}", closest_nodes);
 				for node_idx in closest_nodes {
 					//let remote = self.remote(&node_id)?;
 					if self.remote(node_idx)?.node_id != return_node_id {

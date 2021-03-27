@@ -1,6 +1,6 @@
 //#![allow(dead_code)]
 
-use std::{collections::HashMap, fmt::Debug};
+use std::{collections::HashMap, fmt::Debug, hash::Hash};
 use std::any::Any;
 use std::ops::Range;
 
@@ -11,52 +11,64 @@ use plotters::style::RGBColor;
 use smallvec::SmallVec;
 
 mod router;
-use router::InternetRouter;
+use router::NetSimRouter;
 
-use crate::node::{Node, NodeID, RouteCoord};
+use crate::node::{Node, RouteCoord};
 
 pub const FIELD_DIMENSIONS: (Range<i32>, Range<i32>) = (-320..320, -130..130);
 
-pub type NetAddr = u128;
-pub type PacketVec = SmallVec<[InternetPacket; 32]>;
+#[derive(Error, Debug)]
+pub enum InternetError {
+	#[error("There is no node for this NetAddr: {net_addr}")]
+	NoNodeError { net_addr: NetAddr },
+}
 
 #[derive(Debug)]
-pub enum InternetRequest {
-	RouteCoordDHTRead(NodeID),
-	RouteCoordDHTWrite(NodeID, RouteCoord),
-	RouteCoordDHTReadResponse(NodeID, Option<RouteCoord>),
-	RouteCoordDHTWriteResponse(Option<(NodeID, RouteCoord)>),
+pub enum NetSimRequest<CN: CustomNode + ?Sized> {
+	RouteCoordDHTRead(CN::CustomNodeUUID),
+	RouteCoordDHTWrite(CN::CustomNodeUUID, RouteCoord),
+	RouteCoordDHTReadResponse(CN::CustomNodeUUID, Option<RouteCoord>),
+	RouteCoordDHTWriteResponse(Option<(CN::CustomNodeUUID, RouteCoord)>),
+	RandomNodeRequest(u32),
+	RandomNodeResponse(u32, Option<CN::CustomNodeUUID>),
 }
 
 #[derive(Default, Debug)]
-pub struct InternetPacket {
+pub struct NetSimPacket<CN: CustomNode + ?Sized> {
 	pub dest_addr: NetAddr,
 	pub data: Vec<u8>,
 	pub src_addr: NetAddr,
-	pub request: Option<InternetRequest>,
+	pub request: Option<NetSimRequest<CN>>,
 }
-impl InternetPacket { pub fn gen_request(dest_addr: NetAddr, request: InternetRequest) -> Self { Self { dest_addr, data: vec![], src_addr: dest_addr, request: Some(request) } } }
+impl<CN: CustomNode> NetSimPacket<CN> {
+	pub fn gen_request(dest_addr: NetAddr, request: NetSimRequest<CN>) -> Self { Self { dest_addr, data: vec![], src_addr: dest_addr, request: Some(request) } }
+}
 
-pub trait CustomNode: std::fmt::Debug {
+pub type NetAddr = u128;
+pub type NetSimPacketVec<CN> = SmallVec<[NetSimPacket<CN>; 32]>;
+
+pub trait CustomNode: Debug {
 	type CustomNodeAction;
+	type CustomNodeUUID: Debug + Hash + Eq + Clone;
 	fn net_addr(&self) -> NetAddr;
-	fn tick(&mut self, incoming: PacketVec) -> PacketVec;
+	fn unique_id(&self) -> Self::CustomNodeUUID;
+	fn tick(&mut self, incoming: NetSimPacketVec<Self>) -> NetSimPacketVec<Self>;
 	fn action(&mut self, action: Self::CustomNodeAction);
 	fn as_any(&self) -> &dyn Any;
 	fn set_deus_ex_data(&mut self, data: Option<RouteCoord>);
 }
 
 #[derive(Debug)]
-pub struct InternetSim<CN: CustomNode> {
+pub struct NetSim<CN: CustomNode> {
 	pub nodes: HashMap<NetAddr, CN>,
-	pub router: InternetRouter,
-	route_coord_dht: HashMap<NodeID, RouteCoord>,
+	pub router: NetSimRouter<CN>,
+	route_coord_dht: HashMap<CN::CustomNodeUUID, RouteCoord>,
 }
-impl<CN: CustomNode> InternetSim<CN> {
-	pub fn new() -> InternetSim<CN> {
-		InternetSim {
+impl<CN: CustomNode> NetSim<CN> {
+	pub fn new() -> NetSim<CN> {
+		NetSim {
 			nodes: HashMap::new(),
-			router: InternetRouter::new(FIELD_DIMENSIONS),
+			router: NetSimRouter::new(FIELD_DIMENSIONS),
 			route_coord_dht: HashMap::new(),
 		}
 	}
@@ -66,8 +78,8 @@ impl<CN: CustomNode> InternetSim<CN> {
 		self.nodes.insert(node.net_addr(), node);
 	}
 	pub fn del_node(&mut self, net_addr: NetAddr) { self.nodes.remove(&net_addr); }
-	pub fn node_mut(&mut self, net_addr: NetAddr) -> Option<&mut CN> { self.nodes.get_mut(&net_addr) }
-	pub fn node(&self, net_addr: NetAddr) -> Option<&CN> { self.nodes.get(&net_addr) }
+	pub fn node_mut(&mut self, net_addr: NetAddr) -> Result<&mut CN, InternetError> { self.nodes.get_mut(&net_addr).ok_or(InternetError::NoNodeError { net_addr }) }
+	pub fn node(&self, net_addr: NetAddr) -> Result<&CN, InternetError> { self.nodes.get(&net_addr).ok_or(InternetError::NoNodeError { net_addr }) }
 	pub fn tick(&mut self, ticks: usize, rng: &mut impl Rng) {
 		//let packets_tmp = Vec::new();
 		for _ in 0..ticks {
@@ -81,19 +93,25 @@ impl<CN: CustomNode> InternetSim<CN> {
 				for packet in &mut outgoing_packets {
 					packet.src_addr = node_net_addr;
 					if let Some(request) = &packet.request {
-						log::debug!("NetAddr({:?}) Requested InternetRequest::{:?}", node_net_addr, request);
+						log::debug!("NetAddr({:?}) Requested NetSimRequest::{:?}", node_net_addr, request);
 						packet.request = Some(match *request {
-							InternetRequest::RouteCoordDHTRead(node_id) => {
+							NetSimRequest::RouteCoordDHTRead(ref node_id) => {
+								let node_id = node_id.clone();
 								packet.dest_addr = packet.src_addr;
 								let route = self.route_coord_dht.get(&node_id).map(|r|r.clone());
-								InternetRequest::RouteCoordDHTReadResponse(node_id, route)
-							},
-							InternetRequest::RouteCoordDHTWrite(node_id, route_coord) => {
-								packet.dest_addr = packet.src_addr;
-								let old_route = self.route_coord_dht.insert(node_id, route_coord);
-								InternetRequest::RouteCoordDHTWriteResponse( old_route.map(|r|(node_id, r) ))
+								NetSimRequest::RouteCoordDHTReadResponse(node_id, route)
 							}
-							_ => { log::error!("Invalid InternetRequest variant"); unimplemented!() },
+							NetSimRequest::RouteCoordDHTWrite(ref node_id, route_coord) => {
+								packet.dest_addr = packet.src_addr;
+								let old_route = self.route_coord_dht.insert(node_id.clone(), route_coord);
+								NetSimRequest::RouteCoordDHTWriteResponse( old_route.map(|r|(node_id.clone(), r) ))
+							}
+							NetSimRequest::RandomNodeRequest(unique_id) => {
+								use rand::prelude::IteratorRandom;
+								let id = self.route_coord_dht.iter().choose(rng).map(|(id,_)|id.clone());
+								NetSimRequest::RandomNodeResponse(unique_id, id)
+							}
+							_ => { log::error!("Invalid NetSimRequest variant"); unimplemented!() },
 						});
 					}
 				}
@@ -108,7 +126,7 @@ impl<CN: CustomNode> InternetSim<CN> {
 }
 
 use crate::plot::GraphPlottable;
-impl GraphPlottable for InternetSim<Node> {
+impl GraphPlottable for NetSim<Node> {
 	fn gen_graph(&self) -> Graph<(String, Point2<i32>), RGBColor> {
 		//let root = BitMapBackend::new(path, dimensions).into_drawing_area();
 		/* for (idx, node) in &self.nodes {

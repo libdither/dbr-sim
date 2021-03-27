@@ -2,11 +2,11 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use crate::internet::{NetAddr, InternetPacket, PacketVec};
-
 const VARIANCE: isize = 2;
 use nalgebra::Point2;
 use rand::Rng;
+
+use super::{CustomNode, NetAddr, NetSimPacket, NetSimPacketVec};
 
 /* // Network Sim structuring calculators
 pub trait LatencyCalculator: Default {
@@ -38,14 +38,14 @@ impl RouterNode {
 
 /// Internet router
 #[derive(Debug)]
-pub struct InternetRouter {
+pub struct NetSimRouter<CN: CustomNode> {
 	pub field_dimensions: (Range<i32>, Range<i32>),
 	/// Map linking Node pairs to speed between them (supports differing 2-way speeds)
 	pub node_map: HashMap<NetAddr, RouterNode>,
 	/// Map linking destination `Node`s to inbound packets
-	pub packet_map: HashMap<NetAddr, Vec<(InternetPacket, isize)>>,
+	pub packet_map: HashMap<NetAddr, Vec<(NetSimPacket<CN>, isize)>>,
 }
-impl InternetRouter {
+impl<CN: CustomNode> NetSimRouter<CN> {
 	pub fn new(field_dimensions: (Range<i32>, Range<i32>)) -> Self {
 		Self {
 			field_dimensions,
@@ -56,7 +56,7 @@ impl InternetRouter {
 	pub fn add_node(&mut self, net_addr: NetAddr, rng: &mut impl Rng) {
 		self.node_map.entry(net_addr).or_insert(RouterNode::random(net_addr, &self.field_dimensions, rng));
 	}
-	pub fn add_packets(&mut self, packets: PacketVec, rng: &mut impl Rng) {
+	pub fn add_packets(&mut self, packets: NetSimPacketVec<CN>, rng: &mut impl Rng) {
 		for packet in packets {
 			let dest = self.node_map.entry(packet.dest_addr).or_insert(RouterNode::random(packet.dest_addr, &self.field_dimensions, rng));
 			let (dest_uuid, dest_position) = (dest.uuid, dest.position);
@@ -74,13 +74,13 @@ impl InternetRouter {
 			}
 		}
 	}
-	pub fn tick_node(&mut self, destination: NetAddr) -> PacketVec {
+	pub fn tick_node(&mut self, destination: NetAddr) -> NetSimPacketVec<CN> {
 		if let Some(packets) = self.packet_map.get_mut(&destination) {
 			packets.iter_mut().for_each(|item| item.1 -= 1); // Decrement ticks
 			// Filter out packets that should be passed
 			packets.drain_filter(|x| x.1 <= 0).map(|x| x.0).collect()
 		} else {
-			return PacketVec::new();
+			return NetSimPacketVec::new();
 		}
 	}
 }
