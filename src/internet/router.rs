@@ -13,7 +13,7 @@ pub trait LatencyCalculator: Default {
 	fn new(rng: &mut impl rand::Rng) -> Self;
 	fn generate(&self, other: &Self, rng: &mut impl rand::Rng) -> usize;
 } */
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RouterNode {
 	pub uuid: NetAddr,
 	pub variance: isize,
@@ -37,12 +37,13 @@ impl RouterNode {
 }
 
 /// Internet router
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct NetSimRouter<CN: CustomNode> {
 	pub field_dimensions: (Range<i32>, Range<i32>),
 	/// Map linking Node pairs to speed between them (supports differing 2-way speeds)
 	pub node_map: HashMap<NetAddr, RouterNode>,
 	/// Map linking destination `Node`s to inbound packets
+	#[serde(skip)]
 	pub packet_map: HashMap<NetAddr, Vec<(NetSimPacket<CN>, isize)>>,
 }
 impl<CN: CustomNode> NetSimRouter<CN> {

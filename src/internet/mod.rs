@@ -47,9 +47,9 @@ impl<CN: CustomNode> NetSimPacket<CN> {
 pub type NetAddr = u128;
 pub type NetSimPacketVec<CN> = SmallVec<[NetSimPacket<CN>; 32]>;
 
-pub trait CustomNode: Debug {
+pub trait CustomNode: Debug + Default {
 	type CustomNodeAction;
-	type CustomNodeUUID: Debug + Hash + Eq + Clone;
+	type CustomNodeUUID: Debug + Hash + Eq + Clone + serde::Serialize + serde::de::DeserializeOwned;
 	fn net_addr(&self) -> NetAddr;
 	fn unique_id(&self) -> Self::CustomNodeUUID;
 	fn tick(&mut self, incoming: NetSimPacketVec<Self>) -> NetSimPacketVec<Self>;
@@ -58,7 +58,8 @@ pub trait CustomNode: Debug {
 	fn set_deus_ex_data(&mut self, data: Option<RouteCoord>);
 }
 
-#[derive(Debug)]
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct NetSim<CN: CustomNode> {
 	pub nodes: HashMap<NetAddr, CN>,
 	pub router: NetSimRouter<CN>,

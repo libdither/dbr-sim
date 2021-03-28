@@ -16,7 +16,8 @@ extern crate bitflags;
 #[macro_use]
 extern crate slotmap;
 
-use std::io::{self, prelude::*};
+use std::{fs::File, io::{self, BufReader, prelude::*}};
+use anyhow::Context;
 
 pub mod internet;
 use internet::{NetAddr, NetSim, CustomNode};
@@ -47,12 +48,14 @@ fn main() -> anyhow::Result<()> {
 			//plot::default_graph(&internet, &internet.router.field_dimensions, &format!("target/images/{:0>6}.png", (i-1)*snapshots_per_boot+_j), (1280,720))?;
 		}
 	}
-	internet.tick(4000, rng);
+	internet.tick(5000, rng);
 	plot::default_graph(&internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (1280, 720)).expect("Failed to output image");
 	//internet.node_mut(1)?.action(NodeAction::ConnectRouted(19, 2));
 	internet.node_mut(1)?.action(NodeAction::ConnectTraversal(19));
 	//internet.node_mut(8)?.action(NodeAction::ConnectRouted(19, 3)); 
 	internet.tick(10000, rng);
+
+	println!("Finished Simulation");
 
 
 	let stdin = io::stdin();
@@ -64,7 +67,7 @@ fn main() -> anyhow::Result<()> {
 			let input: Vec<&str> = split_regex.find_iter(&line[..]).flatten().map(|m|m.as_str()).collect();
 			
 			if let Err(err) = parse_command(&mut internet, &input, rng) {
-				println!("Error: {:?}", err);
+				println!("{}", err);
 			}
 			
 		} else { println!("Could not read line from input"); }
@@ -72,106 +75,112 @@ fn main() -> anyhow::Result<()> {
 	Ok(())
 }
 
-use std::error::Error;
-fn parse_command(internet: &mut NetSim<Node>, input: &Vec<&str>, rng: &mut impl rand::Rng) -> Result<(), Box<dyn Error>> {
-	let mut command = input.iter();
-	match command.next() {
+fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl rand::Rng) -> anyhow::Result<()> {
+	match input {
 		// Adding Nodes
-		Some(&"add") => {
-			if let Some(Ok(node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
+		["add", id] => {
+			if let Ok(node_id) = id.parse::<NodeID>() {
 				let node = Node::new(node_id, internet.lease());
 				println!("Adding Node: {:?}", node);
 				internet.add_node(node, rng);
-			} else { Err("add: requires second argument to be NodeID")? }
-		},
+			} else { bail!("add: {:?} cannot be parsed as NodeID", id) }
+		}
+		["add"] => bail!("add: requires second argument to be NodeID"),
 		// Removing Nodes
-		Some(&"del") => {
-			if let Some(Ok(net_addr)) = command.next().map(|s|s.parse::<NetAddr>()) {
-				internet.del_node(net_addr);
-			}
-		},
-		Some(&"tick") => {
-			if let Some(Ok(num_ticks)) = command.next().map(|s|s.parse::<usize>()) {
-				println!("Running {} ticks", num_ticks);
-				internet.tick(num_ticks, rng);
-			}
-		},
+		["del", addr] => {
+			let net_addr = addr.parse::<NetAddr>().context(anyhow!("del: {:?} cannot be parsed as NetAddr", addr))?;
+			internet.del_node(net_addr);
+		}
+		["del"] => bail!("tick: requires second argument to be an existing NetAddr"),
+		["tick", times] => {
+			let num_ticks = times.parse::<usize>().context("tick: number of ticks must be type usize")?;
+			println!("Running {} ticks", num_ticks);
+			internet.tick(num_ticks, rng);
+		}
+		["tick"] => bail!("tick: requires second argument to be a valid positive integer"),
 		// Configuring network
-		Some(&"net") => {
-			println!("{:#?}", internet);
-		},
-		Some(&"graph") => {
+		["net", subcommand @ ..] => {
+			match subcommand {
+				["save", filepath] => {
+					let mut file = File::create(filepath).context("net: save: failed to create file (check perms)")?;
+					let data = bincode::serialize(&internet).context("net: save: failed to serialize object")?;
+					file.write_all(&data).context("net: save: failed to write to file")?;
+				}
+				["save"] => bail!("net: save: must pass file path to save network"),
+				["load", filepath] => {
+					let file = File::open(filepath).context("net: save: failed to create file (check perms)")?;
+					//internet = serde_json::from_reader(BufReader::new(file)).context("net: save: failed to serialize object")?;
+				}
+				["load"] => bail!("net: load: must pass file path to load network"),
+				["print"] => println!("{:#?}", internet),
+				_ => bail!("net: must pass valid subcommand: save, load, print"),
+			}
+		}
+		["graph"] => {
 			plot::default_graph(internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (1280,720))?;
 			//internet.gen_routing_plot("target/images/network_snapshot.png", (500, 500))?;
-		},
+		}
 		// List nodes
-		Some(&"list") => {
-			if let Some(subcommand) = command.next() {
-				match *subcommand {
-					"directs" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.direct_sorted)),
-					"peers" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.peer_list)),
-					"sessions" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.sessions)),
-					"routes" => internet.nodes.iter().for_each(|(id,node)| println!("{}: {:?}", id, node.route_coord)),
-					"router" => internet.router.node_map.iter().for_each(|(net_addr,lc)| println!("{}: {:?}", net_addr, lc)),
-					"node" => {
-						if let Some(node_id) = command.next().map(|s|s.parse::<NetAddr>().ok()).flatten() {
-							println!("{:#?}", internet.node(node_id));
-						}
-					}
-					_ => { println!("list: unknown subcommand") }
+		["list", subcommand @ ..] => {
+			match *subcommand {
+				["directs"] => internet.nodes.iter().for_each(|(addr,node)| println!("{}: {:?}", addr, node.direct_sorted)),
+				["peers"] => internet.nodes.iter().for_each(|(addr,node)| println!("{}: {:?}", addr, node.peer_list)),
+				["sessions"] => internet.nodes.iter().for_each(|(addr,node)| println!("{}: {:?}", addr, node.sessions)),
+				["routes"] => internet.nodes.iter().for_each(|(addr,node)| println!("{}: {:?}", addr, node.route_coord)),
+				["router"] => internet.router.node_map.iter().for_each(|(net_addr,lc)| println!("{}: {:?}", net_addr, lc)),
+				["node", addr] => {
+					let net_addr = addr.parse::<NetAddr>().context("Need NetAddr")?;
+					println!("{:#?}", internet.node(net_addr));
 				}
-			} else {
-				internet.nodes.iter().for_each(|(id,node)|println!("{}:	{:?}", id, node));
+				["all"] => internet.nodes.iter().for_each(|(addr,node)|println!("{}:	{:?}", addr, node)),
+				_ => { println!("list: unknown subcommand. valid: directs, peers, sessions, routes, router, node, all") }
 			}
-		},
-		Some(&"print") => {
-			if let Some(Ok(net_addr)) = command.next().map(|s|s.parse::<NetAddr>()) {
-				println!("{:#?}", internet.node(net_addr)?)
-			} else { Err("print: invalid NetAddr format")? };
-		},
+		}
+		//["list"] => bail!("list: must have secondary command. allowed: directs, peers, sessions, routes, router, node, all"),
+		["print", addr] => {
+			if let Ok(net_addr) = addr.parse::<NetAddr>() {
+				println!("{:#?}", internet.node(net_addr)?);
+			} else { bail!("print: could not parse: {:?} as NetAddr", addr) };
+		}
+		["print"] => bail!("print: requires NetAddr as argument"),
 		// Node subcommand
-		Some(&"node") => {
-			let net_addr = if let Some(Ok(net_addr)) = command.next().map(|s|s.parse::<NetAddr>()) { net_addr } else { return Err("node: must pass valid NetAddr as second argument to identify specific node")? };
+		["node", addr, command @ ..] => {
+			let net_addr = addr.parse::<NetAddr>().context("node: must pass NetAddr corresponding to existing node")?;
 			let node = internet.node_mut(net_addr)?;
-			match command.next() {
-				// Bootstrap a node onto the network
-				Some(&"connect") | Some(&"conn") => {
-					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
-						if let Some(Ok(remote_net_addr)) = command.next().map(|s|s.parse::<NetAddr>()) {
-							println!("Connecting NodeID({:?}) to NodeID({:?}), NetAddr({:?}))", node.node_id, remote_node_id, remote_net_addr);
-							node.action(NodeAction::Connect(remote_node_id, remote_net_addr, vec![]));
-						} else { Err("node: connect: requires NetAddr to bootstrap off of")? }
-					} else { Err("node: connect: requires a NodeID to establish secure connection")? }
-				},
-				Some(&"bootstrap") | Some(&"boot") => {
-					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
-						if let Some(Ok(remote_net_addr)) = command.next().map(|s|s.parse::<NetAddr>()) {
-							println!("Bootstrapping NodeID({:?}) to NodeID({:?}), NetAddr({:?}))", node.node_id, remote_node_id, remote_net_addr);
-							node.action(NodeAction::Bootstrap(remote_node_id, remote_net_addr));
-						} else { Err("node: bootstrap: requires NetAddr to bootstrap off of")? }
-					} else { Err("node: bootstrap: requires a NodeID to establish secure connection")? }
-				},
-				Some(&"print") => {
-					println!("Node: {:#?}", node);
-				},
-				Some(&"notify") | Some(&"nt") => {
-					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
-						if let Some(Ok(data)) = command.next().map(|s|s.parse::<u64>()) {
-							node.action(NodeAction::Notify(remote_node_id, data));
-						} else { Err("node: traverse: data must be u64")? }
-					} else { Err("node: traverse: requires a NodeID to send to")? }
-				},
-				Some(&"route") => {
-					if let Some(Ok(remote_node_id)) = command.next().map(|s|s.parse::<NodeID>()) {
-						node.action(NodeAction::ConnectRouted(remote_node_id, 3));
-					} else { Err("node: route: requires a NodeID to create route to")? }
+			match command {
+				["connect" | "conn", id, addr] => {
+					let remote_node_id = id.parse::<NodeID>().context("node: connect: must pass valid NodeID")?;
+					let remote_net_addr = addr.parse::<NetAddr>().context("node: connect: must pass valid NetAddr")?;
+					println!("Connecting NodeID({:?}) to NodeID({:?}), NetAddr({:?}))", node.node_id, remote_node_id, remote_net_addr);
+					node.action(NodeAction::Connect(remote_node_id, remote_net_addr, vec![]));
 				}
-				Some(_) => Err(format!("node: unknown node command: {:?}", input[2]))?,
-				None => Err(format!("node: requires subcommand"))?
+				["connect" | "conn"] => bail!("node: connect: <NodeID> <NetAddr>"),
+				["bootstrap" | "boot", id, addr] => {
+					let remote_node_id = id.parse::<NodeID>().context("node: boostrap: must pass valid NodeID")?;
+					let remote_net_addr = addr.parse::<NetAddr>().context("node: boostrap: must pass valid NetAddr")?;
+					println!("Bootstrapping NodeID({:?}) to NodeID({:?}), NetAddr({:?}))", node.node_id, remote_node_id, remote_net_addr);
+					node.action(NodeAction::Connect(remote_node_id, remote_net_addr, vec![]));
+				}
+				["boostrap" | "boot"] => bail!("node: bootstrap: <NodeID> <NetAddr>"),
+				["print"] => println!("Node: {:#?}", node),
+				["notify", id, data] => {
+					let remote_node_id = id.parse::<NodeID>().context("node: notify: requires remote NodeID")?;
+					let data = data.parse::<u64>().context("node: notify: data must be u64")?;
+					node.action(NodeAction::Notify(remote_node_id, data));
+				}
+				["traverse", id] => {
+					let remote_node_id = id.parse::<NodeID>().context("node: traverse: must pass valid NodeID")?;
+					node.action(NodeAction::ConnectTraversal(remote_node_id));
+				}
+				["route", id] => {
+					let remote_node_id = id.parse::<NodeID>().context("node: route: must pass valid NodeID")?;
+					node.action(NodeAction::ConnectRouted(remote_node_id, 3));
+				}
+				_ => bail!("node: unknown subcommand"),
 			}
-		},
-		Some(_) => Err(format!("Invalid Command: {:?}", input))?,
-		None => {},
+		}
+		["node"] => bail!("node: requires subcommand"),
+		_ => bail!("unknown command: {:?}", input)
 	}
 	Ok(())
 }

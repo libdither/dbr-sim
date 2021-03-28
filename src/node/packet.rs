@@ -91,13 +91,13 @@ impl NodeEncryption {
 	pub fn package(&self, dest_addr: NetAddr) -> InternetPacket {
 		InternetPacket {
 			src_addr: 0, // This should get filled in automatically for all outgoing packets
-			data: serde_json::to_vec(&self).expect("Failed to encode json"),
+			data: bincode::serialize(self).expect("Failed to encode packet"),
 			dest_addr,
 			request: None,
 		}
 	}
-	pub fn unpackage(packet: &InternetPacket) -> Result<Self, serde_json::Error> {
-		serde_json::from_slice(&packet.data)
+	pub fn unpackage(packet: &InternetPacket) -> Result<Self, bincode::Error> {
+		bincode::deserialize(&packet.data)
 	}
 	/* pub fn wrap_traverse(self, session_id: SessionID, route_coord: RouteCoord) -> NodeEncryption {
 		let packet = NodePacket::Traverse(route_coord, Box::new(self));

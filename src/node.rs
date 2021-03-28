@@ -151,7 +151,7 @@ pub enum NodeError {
 	#[error("Remote Session Error")]
 	SessionError(#[from] SessionError),
 	#[error("Failed to decode packet data")]
-	SerdeDecodeError(#[from] serde_json::Error),
+	DecodeError(#[from] bincode::Error),
 	#[error(transparent)]
     Other(#[from] anyhow::Error),
 }
@@ -161,7 +161,7 @@ impl NodeError {
 	}
 }
 
-#[derive(Derivative)]
+#[derive(Derivative, Serialize, Deserialize)]
 #[derivative(Debug, Default)]
 pub struct Node {
 	pub node_id: NodeID,
@@ -183,7 +183,9 @@ pub struct Node {
 
 	pub peer_list: BiHashMap<NodeIdx, RouteCoord>, // Used for routing and peer management, peer count should be no more than TARGET_PEER_COUNT
 	#[derivative(Debug="ignore")]
+	#[serde(skip)]
 	pub route_map: DiGraphMap<NodeID, u64>, // Bi-directional graph of all locally known nodes and the estimated distances between them 
+	#[serde(skip)]
 	pub action_list: ActionVec, // Actions will wait here until NodeID session is established
 }
 impl CustomNode for Node {
@@ -354,7 +356,6 @@ impl Node {
 					out_actions.push(NodeAction::RequestRouteCoord(remote_node_id));
 					out_actions.push(NodeAction::ConnectTraversal(remote_node_id).gen_condition(NodeActionCondition::RemoteRouteCoord(remote_node_id)));
 				}
-				
 			}
 			NodeAction::ConnectRouted(remote_node_id, hops) => {
 				let self_route_coord = self.route_coord.ok_or(NodeError::NoCalculatedRouteCoord)?;

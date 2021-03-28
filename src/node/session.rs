@@ -16,17 +16,20 @@ pub type PingID = u64;
 const MAX_PENDING_PINGS: usize = 25;
 pub const NUM_NODE_PACKETS: usize = 10;
 
-#[derive(Derivative)]
+#[derive(Derivative, Serialize, Deserialize)]
 #[derivative(Debug)]
 pub struct SessionTracker {
 	#[derivative(Debug="ignore")]
+	#[serde(skip)]
 	ping_queue: PriorityQueue<PingID, Reverse<usize>>, // Tuple represents (ID of ping, priority by reversed time sent) 
 	pub dist_avg: RouteScalar,
 	#[derivative(Debug="ignore")]
 	dist_dev: RouteScalar,
 	#[derivative(Debug="ignore")]
+	#[serde(skip)]
 	ping_avg: SimpleMovingAverage, // Moving average of ping times
 	#[derivative(Debug="ignore")]
+	#[serde(skip)]
 	ping_dev: StandardDeviation,
 	pub ping_count: usize,
 }
@@ -66,6 +69,7 @@ impl SessionTracker {
 }
 
 bitflags! {
+	#[derive(Serialize, Deserialize)]
 	pub struct PeerStatus: u8 {
 		const None 		= 0b00000000;
 		const Outgoing 	= 0b00000001;
@@ -74,7 +78,7 @@ bitflags! {
 	}
 }
 /// Represents directly connected session over plain internet
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DirectSession {
 	/// Network Address of remote
 	pub net_addr: NetAddr,
@@ -96,14 +100,14 @@ impl DirectSession {
 	}
 }
 /// Represents a session that traverses packets through the dither network to its destination
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TraversedSession {
 	/// Coordinate of remote routed node
 	pub route_coord: RouteCoord
 }
 
 /// Represents onion-routed session through different Dither nodes
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RoutedSession {
 	/// Coordinate of remote routed node
 	pub route_coord: RouteCoord,
@@ -111,7 +115,7 @@ pub struct RoutedSession {
 	pub proxy_nodes: Vec<SessionID>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum SessionType {
 	Direct(DirectSession),
 	Traversed(TraversedSession),
@@ -131,7 +135,7 @@ pub enum SessionError {
 }
 
 /// Represents a Remote Connection, Direct or Routed
-#[derive(Derivative)]
+#[derive(Derivative, Serialize, Deserialize)]
 #[derivative(Debug)]
 pub struct RemoteSession {
 	/// All connections must have a SessionID for symmetric encryption
@@ -143,6 +147,7 @@ pub struct RemoteSession {
 	pub tracker: SessionTracker,
 	/// Keep track of times certain packets were last received from remote node
 	#[derivative(Debug="ignore")]
+	#[serde(skip)]
 	pub last_packet_times: HashMap<(Discriminant<NodePacket>, NodeID), usize>, // Maps Packets to time last sent
 }
 impl RemoteSession {

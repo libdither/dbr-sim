@@ -16,7 +16,7 @@ pub enum RemoteNodeError {
 	SessionError(#[from] SessionError),
 }
 
-#[derive(Debug, Derivative)]
+#[derive(Debug, Derivative, Serialize, Deserialize)]
 #[derivative(Hash, PartialEq, Eq)]
 pub struct RemoteNode {
 	// The ID of the remote node
@@ -26,9 +26,11 @@ pub struct RemoteNode {
 	pub route_coord: Option<RouteCoord>,
 	// If handshake is pending: Some(pending_session_id, time_sent_handshake, packets_to_send)
 	#[derivative(PartialEq="ignore", Hash="ignore")]
+	#[serde(skip)]
 	pub pending_session: Option<Box< (SessionID, usize, Vec<NodePacket>) >>,
 	// If route is pending: Some(search location route coords, NodeIDs found willing to create RoutedSessions in search location)
 	#[derivative(PartialEq="ignore", Hash="ignore")]
+	#[serde(skip)]
 	pub pending_route: Option<Vec<(RouteCoord, Option<NodeID>)>>,
 	// Contains Session details if session is connected
 	#[derivative(PartialEq="ignore", Hash="ignore")]
