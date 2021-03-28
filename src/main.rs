@@ -16,7 +16,7 @@ extern crate bitflags;
 #[macro_use]
 extern crate slotmap;
 
-use std::{fs::File, io::{self, BufReader, prelude::*}};
+use std::{fs::File, io::{self, BufReader, prelude::*}, mem};
 use anyhow::Context;
 
 pub mod internet;
@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
 	let rng = &mut rand::rngs::SmallRng::seed_from_u64(0);
 	let mut internet = NetSim::new();
 
-	for i in 0..20 {
+	for i in 0..3 {
 		let node2 = Node::new(i, internet.lease());
 		internet.add_node(node2, rng);
 	}
@@ -108,8 +108,10 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 				}
 				["save"] => bail!("net: save: must pass file path to save network"),
 				["load", filepath] => {
-					let file = File::open(filepath).context("net: save: failed to create file (check perms)")?;
-					//internet = serde_json::from_reader(BufReader::new(file)).context("net: save: failed to serialize object")?;
+					let file = File::open(filepath).context("net: load: failed to open file (check perms)")?;
+					let mut internet_new: NetSim<Node> = bincode::deserialize_from(BufReader::new(file)).context("net: load: failed to deserialize object")?;
+					mem::swap(internet, &mut internet_new);
+					//internet = bincode::deserialize_from(BufReader::new(file)).context("net: save: failed to serialize object")?;
 				}
 				["load"] => bail!("net: load: must pass file path to load network"),
 				["print"] => println!("{:#?}", internet),
