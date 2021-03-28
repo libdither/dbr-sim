@@ -16,7 +16,7 @@ extern crate bitflags;
 #[macro_use]
 extern crate slotmap;
 
-use std::{fs::File, io::{self, BufReader, prelude::*}, mem};
+use std::{fs::File, io::{self, BufReader, prelude::*}};
 use anyhow::Context;
 
 pub mod internet;
@@ -26,37 +26,24 @@ use node::{Node, NodeAction, NodeID};
 pub mod plot;
 use rand::SeedableRng;
 
+const CACHE_FILE: &str = "./target/net.cache";
+
 fn main() -> anyhow::Result<()> {
 	env_logger::init();
 	println!("Hello, Network!");
 	let _ = std::fs::create_dir_all("target/images");
 
 	let rng = &mut rand::rngs::SmallRng::seed_from_u64(0);
+	// Try and read cache file, else gen new network
 	let mut internet = NetSim::new();
-
-	for i in 0..3 {
-		let node2 = Node::new(i, internet.lease());
-		internet.add_node(node2, rng);
-	}
-
-	let snapshots_per_boot = 10;
-	for i in 1..(internet.nodes.len()+0) {
-		let node = internet.node_mut(i as NetAddr)?;
-		node.action(NodeAction::Bootstrap(0,0));
-		for _j in 0..snapshots_per_boot {
-			internet.tick(4000/snapshots_per_boot, rng);
-			//plot::default_graph(&internet, &internet.router.field_dimensions, &format!("target/images/{:0>6}.png", (i-1)*snapshots_per_boot+_j), (1280,720))?;
+	if let Ok(cache_file) = File::open(CACHE_FILE) {
+		if let Ok(cached_network) = bincode::deserialize_from(BufReader::new(cache_file)) {
+			println!("Loaded Cached Network: {}", CACHE_FILE);
+			internet = cached_network;
+		} else {
+			println!("Found cache file but was unable to deserialize it, perhaps it is from an older version?");
 		}
 	}
-	internet.tick(5000, rng);
-	plot::default_graph(&internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (1280, 720)).expect("Failed to output image");
-	//internet.node_mut(1)?.action(NodeAction::ConnectRouted(19, 2));
-	internet.node_mut(1)?.action(NodeAction::ConnectTraversal(19));
-	//internet.node_mut(8)?.action(NodeAction::ConnectRouted(19, 3)); 
-	internet.tick(10000, rng);
-
-	println!("Finished Simulation");
-
 
 	let stdin = io::stdin();
 	let split_regex = fancy_regex::Regex::new(r#"((?<=")[^"]*(?=")|[^" ]+)"#)?;
@@ -103,19 +90,45 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 			match subcommand {
 				["save", filepath] => {
 					let mut file = File::create(filepath).context("net: save: failed to create file (check perms)")?;
-					let data = bincode::serialize(&internet).context("net: save: failed to serialize object")?;
+					let data = bincode::serialize(&internet).context("net: save: failed to serialize network")?;
 					file.write_all(&data).context("net: save: failed to write to file")?;
 				}
 				["save"] => bail!("net: save: must pass file path to save network"),
 				["load", filepath] => {
 					let file = File::open(filepath).context("net: load: failed to open file (check perms)")?;
-					let mut internet_new: NetSim<Node> = bincode::deserialize_from(BufReader::new(file)).context("net: load: failed to deserialize object")?;
-					mem::swap(internet, &mut internet_new);
+					let internet_new: NetSim<Node> = bincode::deserialize_from(BufReader::new(file)).context("net: load: failed to deserialize network")?;
+					*internet = internet_new;
 					//internet = bincode::deserialize_from(BufReader::new(file)).context("net: save: failed to serialize object")?;
 				}
 				["load"] => bail!("net: load: must pass file path to load network"),
+				["cache"] => {
+					let mut cache_file = File::create(CACHE_FILE).context("net: cache: can't create ./net.cache (check perms?)")?;
+					let data = bincode::serialize(&internet).context("net: cache: failed to serialize network")?;
+					cache_file.write_all(&data).context("net: cache: failed to write to cache file")?;
+					println!("Created network cache");
+				}
+				["clear"] => *internet = NetSim::new(),
+				["gen", number] => {
+					*internet = NetSim::new();
+
+					let num_nodes = number.parse::<u32>().context("net: gen: <number:u32> for first argument")?;
+					for i in 0..num_nodes {
+						let node2 = Node::new(i, internet.lease());
+						internet.add_node(node2, rng);
+					}
+		
+					let snapshots_per_boot = 10;
+					for i in 1..(internet.nodes.len()+0) {
+						let node = internet.node_mut(i as NetAddr)?;
+						node.action(NodeAction::Bootstrap(0,0));
+						for _j in 0..snapshots_per_boot {
+							internet.tick(4000/snapshots_per_boot, rng);
+							//plot::default_graph(&internet, &internet.router.field_dimensions, &format!("target/images/{:0>6}.png", (i-1)*snapshots_per_boot+_j), (1280,720))?;
+						}
+					}
+				}
 				["print"] => println!("{:#?}", internet),
-				_ => bail!("net: must pass valid subcommand: save, load, print"),
+				_ => bail!("net: must pass valid subcommand: save <filepath>, load <filepath>, cache, clear, gen <number>, print"),
 			}
 		}
 		["graph"] => {
@@ -182,6 +195,15 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 			}
 		}
 		["node"] => bail!("node: requires subcommand"),
+		["test"] => {
+			
+			internet.tick(5000, rng);
+			plot::default_graph(internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (1280, 720)).expect("Failed to output image");
+			//internet.node_mut(1)?.action(NodeAction::ConnectRouted(19, 2));
+			internet.node_mut(1)?.action(NodeAction::ConnectTraversal(19));
+			//internet.node_mut(8)?.action(NodeAction::ConnectRouted(19, 3)); 
+			internet.tick(10000, rng);
+		}
 		_ => bail!("unknown command: {:?}", input)
 	}
 	Ok(())
