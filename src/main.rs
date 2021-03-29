@@ -126,6 +126,7 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 							//plot::default_graph(&internet, &internet.router.field_dimensions, &format!("target/images/{:0>6}.png", (i-1)*snapshots_per_boot+_j), (1280,720))?;
 						}
 					}
+					internet.tick(10000, rng);
 				}
 				["print"] => println!("{:#?}", internet),
 				_ => bail!("net: must pass valid subcommand: save <filepath>, load <filepath>, cache, clear, gen <number>, print"),
@@ -195,14 +196,80 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 			}
 		}
 		["node"] => bail!("node: requires subcommand"),
-		["test"] => {
+		["test", subcommand @ ..] => {
+			match subcommand {
+				["sample", amount] => {
+					let num_samples = amount.parse::<usize>().context("test: sample: requires number of samples")?;
+					use permutation_iterator::{RandomPairPermutor, Permutor};
+					let nlen = internet.nodes.len() as u32;
+					let permutor = RandomPairPermutor::new(nlen, nlen).map(|(i,j)|(i as NetAddr, j as NetAddr));
+
+					let nodes = permutor.take(num_samples).map(|(i,j)|((i, internet.nodes.get(&i).unwrap()), (j, internet.nodes.get(&j).unwrap())));
+					let nodes = nodes.collect::<Vec<((NetAddr, &Node), (NetAddr, &Node))>>();
+					//println!("{:?}", nodes);
+					println!("Sampled Nodes: {:?}", nodes.iter().map(|(s,e)|(s.1.node_id, e.1.node_id)).collect::<Vec<(NodeID, NodeID)>>());
+
+					//let hops = 3;
+					let mut all_times: Vec<(NetAddr, NetAddr, Vec<u64>, u64, Vec<u64>, u64)> = Vec::new();
+					for ((start_addr,start),(end_addr,end)) in nodes {
+						
+						/* let start_route_coord = start.route_coord.unwrap().map(|s|s as f64);
+						let end_route_coord = end.route_coord.unwrap().map(|s|s as f64);
+						let diff = (end_route_coord - start_route_coord) / hops as f64;
+						let mut routes: Vec<Point2<f64>> = Vec::with_capacity(hops);
+						for i in 1..hops {
+							routes.push(start_route_coord + diff * i as f64);
+						}) */
+
+						// Calculate traversal times
+						let mut routed_times: Vec<u64> = Vec::new();
+						let end_route = end.route_coord.unwrap();
+						//let mut current_id: NodeID = 0;
+						let mut current_node: &Node = start;
+						//println!("Current Sample: {:?} -> {:?}", current_node.node_id, end.node_id);
+						let mut timeout = 10;
+						// Run through path
+						while current_node.node_id != end.node_id && timeout > 0 {
+							let node_idx = current_node.find_closest_peer(&end_route).unwrap();
+							let next_node = current_node.remote(node_idx).unwrap();
+							//println!("Found Path {:?} -> {:?}", current_node.node_id, next_node.node_id);
+							
+							let next_node_session = next_node.session().unwrap();
+							routed_times.push(next_node_session.dist());
+							let next_net_addr = next_node_session.direct().unwrap().net_addr;
+							current_node = internet.node(next_net_addr).unwrap();
+
+							//println!("Next Conn: {:?} -> {:?}", current_node.node_id, end.node_id);
+							timeout -= 1;
+						}
+						let routed_times_sum: u64 = routed_times.iter().sum();
+
+						// Calculate random times
+						let mut random_times = Vec::with_capacity(3);
+						// Get some nodes
+						let random_itermediate_nodes = Permutor::new(internet.nodes.len() as u64).take(3).map(|i|&internet.nodes[&(i as u128)]);
+						let mut current_node = start;
+						for node in random_itermediate_nodes {
+							let dist = node::types::route_dist(&current_node.route_coord.unwrap(), &node.route_coord.unwrap());
+							current_node = node;
+							random_times.push(dist as u64);
+						}
+						let random_times_sum: u64 = random_times.iter().sum();
+
+						all_times.push((start_addr, end_addr, routed_times, routed_times_sum, random_times, random_times_sum));
+					}
+					println!("All Times: {:?}", all_times);
+				}
+				_ => {
+					//internet.tick(5000, rng);
+					//plot::default_graph(internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (1280, 720)).expect("Failed to output image");
+					//internet.node_mut(1)?.action(NodeAction::ConnectRouted(19, 2));
+					internet.node_mut(1)?.action(NodeAction::ConnectTraversal(19));
+					//internet.node_mut(8)?.action(NodeAction::ConnectRouted(19, 3)); 
+					internet.tick(10000, rng);
+				}
+			}
 			
-			internet.tick(5000, rng);
-			plot::default_graph(internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (1280, 720)).expect("Failed to output image");
-			//internet.node_mut(1)?.action(NodeAction::ConnectRouted(19, 2));
-			internet.node_mut(1)?.action(NodeAction::ConnectTraversal(19));
-			//internet.node_mut(8)?.action(NodeAction::ConnectRouted(19, 3)); 
-			internet.tick(10000, rng);
 		}
 		_ => bail!("unknown command: {:?}", input)
 	}

@@ -1,6 +1,6 @@
 #[allow(unused_imports)]
 
-const TARGET_PEER_COUNT: usize = 5;
+const TARGET_PEER_COUNT: usize = 10;
 // Amount of time to wait to connect to a peer who wants to ping
 // const WANT_PING_CONN_TIMEOUT: usize = 300;
 const MAX_REQUEST_PINGS: usize = 10;
@@ -8,7 +8,7 @@ const MAX_REQUEST_PINGS: usize = 10;
 use std::collections::BTreeMap;
 use std::any::Any;
 
-mod types;
+pub mod types;
 mod session;
 mod packet;
 mod remote;
@@ -258,7 +258,7 @@ impl Node {
 		let min_peer = self.peer_list.iter()
 			.min_by_key(|(_,&p)|{
 				let diff = p - *remote_route_coord;
-				diff.dot(&diff)
+				diff.dot(&diff);
 			});
 		min_peer.map(|(&node,_)|node).ok_or(NodeError::InsufficientPeers { required: 1 })
 	}

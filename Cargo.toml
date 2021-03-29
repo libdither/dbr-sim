@@ -29,4 +29,5 @@ bimap = { version = "0.6.0", features = ["serde"] }
 ta = "0.4.0"
 thiserror = "1.0.24"
 vpsearch = "2.0.1"
+permutation_iterator = "0.1.2"
 

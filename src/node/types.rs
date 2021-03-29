@@ -24,6 +24,11 @@ impl From<Point2<i64>> for RouteCoordStruct {
 		RouteCoordStruct { x: other[0], y: other[1] }
 	}
 }
+pub fn route_dist(start: &RouteCoord, end: &RouteCoord) -> f64 {
+	let start_f64 = start.map(|s|s as f64);
+	let end_f64 = end.map(|s|s as f64);
+	nalgebra::distance(&start_f64, &end_f64)
+}
 
 struct MyImpl;
 use crate::node::NodeIdx;

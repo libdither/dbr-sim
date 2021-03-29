@@ -24,8 +24,9 @@ pub fn default_graph<GI: GraphPlottable>(item: &GI, render_range: &(Range<i32>, 
 	// Set background color
 	root.fill(&DEFAULT_BACKGROUND)?;
 	// Make sure it uses correct graph layout with 4 quadrants
-	let logic_x = -(render_range.0.end as f32)..(render_range.0.end as f32);
-	let logic_y = (render_range.1.end as f32)..-(render_range.1.end as f32);
+	let eb = 20.; // Edge buffer
+	let logic_x = -(render_range.0.end as f32 + eb)..(render_range.0.end as f32 + eb);
+	let logic_y = (render_range.1.end as f32 + eb)..-(render_range.1.end as f32 + eb);
 	let root = root.apply_coord_spec(Cartesian2d::<RangedCoordf32, RangedCoordf32>::new(
 		logic_x,
 		logic_y,
