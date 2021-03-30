@@ -259,6 +259,8 @@ impl Node {
 			.min_by_key(|(_,&p)|{
 				let diff = p - *remote_route_coord;
 				diff.dot(&diff);
+				//println!("Dist from {:?}: {}: {}", self.node_id, self.remote(**id).unwrap().node_id, d_sq);
+				//d_sq
 			});
 		min_peer.map(|(&node,_)|node).ok_or(NodeError::InsufficientPeers { required: 1 })
 	}

@@ -229,7 +229,7 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 						//println!("Current Sample: {:?} -> {:?}", current_node.node_id, end.node_id);
 						let mut timeout = 10;
 						// Run through path
-						while current_node.node_id != end.node_id && timeout > 0 {
+						while current_node.node_id != end.node_id {
 							let node_idx = current_node.find_closest_peer(&end_route).unwrap();
 							let next_node = current_node.remote(node_idx).unwrap();
 							//println!("Found Path {:?} -> {:?}", current_node.node_id, next_node.node_id);
@@ -239,10 +239,15 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 							let next_net_addr = next_node_session.direct().unwrap().net_addr;
 							current_node = internet.node(next_net_addr).unwrap();
 
-							//println!("Next Conn: {:?} -> {:?}", current_node.node_id, end.node_id);
 							timeout -= 1;
+							if timeout <= 0 {
+								break
+							}
 						}
 						let routed_times_sum: u64 = routed_times.iter().sum();
+						if timeout <= 0 || routed_times_sum == 0 {
+							continue
+						}
 
 						// Calculate random times
 						let mut random_times = Vec::with_capacity(3);
@@ -259,6 +264,24 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 						all_times.push((start_addr, end_addr, routed_times, routed_times_sum, random_times, random_times_sum));
 					}
 					println!("All Times: {:?}", all_times);
+
+					// Write to CSV Output
+					let csv_file = File::create(format!("target/test_sample_{}.csv", num_samples)).unwrap();
+					let mut wtr = csv::Writer::from_writer(csv_file);
+					#[derive(Debug, Serialize)]
+					struct TimeRecord {
+						name: String,
+						routed_time: u64,
+						random_time: u64,
+					}
+					for time in all_times {
+						wtr.serialize(TimeRecord {
+							name: format!("{} -> {}", time.0, time.1),
+							routed_time: time.3,
+							random_time: time.5,
+						}).unwrap();
+					}
+					wtr.flush().unwrap();
 				}
 				_ => {
 					//internet.tick(5000, rng);
