@@ -10,7 +10,4 @@ pkgs.mkShell {
 		freetype
 		fontconfig
 	];
-	shellHook = ''
-    	export PGDATA=./db/content
-	'';
 }
