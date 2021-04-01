@@ -338,6 +338,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "dbr-sim"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bimap",
+ "bincode",
+ "bitflags",
+ "csv",
+ "derivative",
+ "env_logger",
+ "fancy-regex",
+ "log",
+ "nalgebra",
+ "permutation_iterator",
+ "petgraph",
+ "plotters",
+ "priority-queue",
+ "rand 0.8.3",
+ "serde",
+ "serde_json",
+ "slotmap",
+ "smallvec",
+ "ta",
+ "thiserror",
+ "vpsearch",
+]
+
+[[package]]
 name = "deflate"
 version = "0.7.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -387,34 +415,6 @@ dependencies = [
  "libc",
  "redox_users",
  "winapi",
-]
-
-[[package]]
-name = "dither-onion-router"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bimap",
- "bincode",
- "bitflags",
- "csv",
- "derivative",
- "env_logger",
- "fancy-regex",
- "log",
- "nalgebra",
- "permutation_iterator",
- "petgraph",
- "plotters",
- "priority-queue",
- "rand 0.8.3",
- "serde",
- "serde_json",
- "slotmap",
- "smallvec",
- "ta",
- "thiserror",
- "vpsearch",
 ]
 
 [[package]]

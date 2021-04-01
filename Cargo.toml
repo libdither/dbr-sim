@@ -1,5 +1,5 @@
 [package]
-name = "dither-onion-router"
+name = "dbr-sim"
 version = "0.1.0"
 authors = ["Zyansheep <zyansheep@gmail.com>"]
 edition = "2018"
