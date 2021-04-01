@@ -64,6 +64,22 @@ fn main() -> anyhow::Result<()> {
 
 fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl rand::Rng) -> anyhow::Result<()> {
 	match input {
+		["help"] => {
+			println!(
+				r#"
+						command list:
+						add <NodeID> - add a node to network
+						del <NetAddr> - delete node from network
+						tick <usize> - run network a certain number of iterations
+						net <subcommand> - network operations
+						graph - output graph of current network as targe/images/network_snapshot.png
+						list <subcommand> - list various aspects of network
+						print <NetAddr> - pretty-print a node on the network
+						node <subcommand> - node operations
+						test <test> - run a specific test
+				"#
+			)
+		}
 		// Adding Nodes
 		["add", id] => {
 			if let Ok(node_id) = id.parse::<NodeID>() {
@@ -294,7 +310,8 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 			}
 			
 		}
-		_ => bail!("unknown command: {:?}", input)
+		[command, ..] => bail!("unknown command: {}, type help for list of valid commands", command),
+		_ => return Ok(())
 	}
 	Ok(())
 }
