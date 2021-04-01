@@ -2,26 +2,19 @@
   	inputs = {
 		utils.url = "github:numtide/flake-utils";
 		naersk.url = "github:nmattia/naersk";
-		mozillapkgs = {
-			url = "github:mozilla/nixpkgs-mozilla";
-			flake = false;
-		};
+		fenix.url = "github:nix-community/fenix";
   	};
 
-  	outputs = { self, nixpkgs, utils, naersk, mozillapkgs }:
+  	outputs = { self, nixpkgs, utils, naersk, fenix }:
 	utils.lib.eachDefaultSystem (system: let
 		pkgs = nixpkgs.legacyPackages."${system}";
-		# Get a specific rust version
-		mozilla = pkgs.callPackage (mozillapkgs + "/package-set.nix") {};
-		rust = (mozilla.rustChannelOf {
-			date = "2021-03-31"; # get the current date with `date -I`
-			channel = "nightly";
-			sha256 = "sha256-oK5ebje09MRn988saJMT3Zze/tRE7u9zTeFPV1CEeLc=";
-		}).rust;
-		# Override the version used in naersk
+		# Specify Rust Toolchain
+		# Use Stable (Default)
+		# naersk-lib = naersk.lib."${system}";
+		# Use Nightly (provided by fenix)
 		naersk-lib = naersk.lib."${system}".override {
-			cargo = rust;
-			rustc = rust;
+			# Use Fenix to get nightly rust
+			inherit (fenix.packages.${system}.minimal) cargo rustc;
 		};
 	in rec {
 		# `nix build`
