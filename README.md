@@ -10,3 +10,5 @@ Distance-Based Rounting (DBR) is a devised method by which packets can be routed
 This package requires `cargo`, `cmake`,`pkg-config`, `fontconfig`, and `freetype` to compile.
 
 dbr-sim also requires rust nightly.
+
+If you use nix with flakes, you can do `nix run` to download all dependencies and run it.
