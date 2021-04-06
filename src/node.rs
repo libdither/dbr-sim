@@ -14,7 +14,7 @@ mod packet;
 mod remote;
 
 pub use types::{NodeID, SessionID, RouteCoord, RouteScalar};
-use session::{SessionError, RemoteSession};
+use session::{SessionError, RemoteSession, SessionType};
 use remote::{RemoteNode, RemoteNodeError};
 pub use packet::{NodePacket, TraversalPacket, NodeEncryption};
 
@@ -324,10 +324,18 @@ impl Node {
 				for node_idx in direct_nodes {
 					let toggle = self.peer_list.contains_left(&node_idx);
 					let remote = self.remote(node_idx)?;
-					if !remote.session()?.is_peer() && toggle {
-						let dist = remote.session()?.tracker.dist_avg;
-						self.send_packet(node_idx, NodePacket::PeerNotify(0, self_route_coord, num_peers, dist), outgoing)?;
-					} else {  }
+					let dist = remote.session()?.tracker.dist_avg;
+					match (!remote.session()?.is_peer(), toggle) {
+						(false, true) => {
+							// Notify that this node thinks of other node as a direct peer
+							self.send_packet(node_idx, NodePacket::PeerNotify(0, self_route_coord, num_peers, dist), outgoing)?;
+						},
+						(true, false) => {
+							// Notify that this node no longer things of other node as a direct peer, so perhaps other node should drop connection
+							self.send_packet(node_idx, NodePacket::PeerNotify(usize::MAX, self_route_coord, num_peers, dist), outgoing)?;
+						},
+						_ => {},
+					}
 					self.remote_mut(node_idx)?.session_mut()?.direct_mut()?.set_peer(toggle);
 				}
 				
@@ -353,8 +361,10 @@ impl Node {
 			NodeAction::ConnectTraversal(remote_node_id) => {
 				let (_, remote) = self.add_remote(remote_node_id)?;
 				if let Some(remote_route_coord) = remote.route_coord {
+					// Toggle Pending Route
 					remote.pending_route = Some(vec![(remote_route_coord, None)]);
-				} else { // Otherwise, Request it and await Condition for next ConnectRouted
+				} else {
+					// Wait for RouteCoord DHT to resolve before re-running
 					out_actions.push(NodeAction::RequestRouteCoord(remote_node_id));
 					out_actions.push(NodeAction::ConnectTraversal(remote_node_id).gen_condition(NodeActionCondition::RemoteRouteCoord(remote_node_id)));
 				}
@@ -732,6 +742,43 @@ impl Node {
 		
 		log::info!("RouteCoord generated: {}", v3_g);
 		Ok((v3_g[0] as i64, v3_g[1] as i64)) */
+	}
+}
+
+use std::fmt;
+impl fmt::Display for Node {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		write!(f, "Node {}, /net/{}", self.node_id, self.net_addr)?;
+		if let Some(route_coord) = self.route_coord {
+			write!(f, ", @ ({}, {})", route_coord.x, route_coord.y)?;
+		}
+		for (_,remote) in self.remotes.iter() {
+			writeln!(f)?;
+			if let Ok(session) = remote.session() {
+				let session_type_char = match &session.session_type {
+					SessionType::Direct(direct) => {
+						match direct.peer_status.bits() { 1 => ">", 2 => "<", 3 => "=", _ => ".", }
+					},
+					SessionType::Traversed(_) => "~",
+					SessionType::Routed(_) => "&",
+				};
+				write!(f, " {} | NodeID({})", session_type_char, remote.node_id)?;
+				match &session.session_type {
+					SessionType::Direct(direct) => write!(f, ", /net/{}", direct.net_addr)?,
+					SessionType::Traversed(traversed) => write!(f, ", @ ({}, {})", traversed.route_coord.x, traversed.route_coord.y)?,
+					SessionType::Routed(routed) => {
+						write!(f, ", @ ({}, {}): ", routed.route_coord.x, routed.route_coord.y)?;
+						for node_id in &routed.proxy_nodes {
+							write!(f, "{} -> ", node_id)?;
+						}
+						write!(f, "{}", remote.node_id)?;
+					}
+				}
+			} else {
+				write!(f, "   | NodeID({})", remote.node_id)?;
+			}
+		}
+		writeln!(f)
 	}
 }
 

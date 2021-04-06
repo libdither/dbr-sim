@@ -162,7 +162,7 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 				["router"] => internet.router.node_map.iter().for_each(|(net_addr,lc)| println!("{}: {:?}", net_addr, lc)),
 				["node", addr] => {
 					let net_addr = addr.parse::<NetAddr>().context("Need NetAddr")?;
-					println!("{:#?}", internet.node(net_addr));
+					println!("{}", internet.node(net_addr)?);
 				}
 				["all"] => internet.nodes.iter().for_each(|(addr,node)|println!("{}:	{:?}", addr, node)),
 				_ => { println!("list: unknown subcommand. valid: directs, peers, sessions, routes, router, node, all") }
@@ -171,7 +171,7 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 		//["list"] => bail!("list: must have secondary command. allowed: directs, peers, sessions, routes, router, node, all"),
 		["print", addr] => {
 			if let Ok(net_addr) = addr.parse::<NetAddr>() {
-				println!("{:#?}", internet.node(net_addr)?);
+				println!("{}", internet.node(net_addr)?);
 			} else { bail!("print: could not parse: {:?} as NetAddr", addr) };
 		}
 		["print"] => bail!("print: requires NetAddr as argument"),
@@ -300,12 +300,15 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 					wtr.flush().unwrap();
 				}
 				_ => {
-					//internet.tick(5000, rng);
-					//plot::default_graph(internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (1280, 720)).expect("Failed to output image");
+					plot::default_graph(internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (1280, 720)).expect("Failed to output image");
+					
 					//internet.node_mut(1)?.action(NodeAction::ConnectRouted(19, 2));
+					// Connect node 1 traversed to node 19
 					internet.node_mut(1)?.action(NodeAction::ConnectTraversal(19));
-					//internet.node_mut(8)?.action(NodeAction::ConnectRouted(19, 3)); 
-					internet.tick(10000, rng);
+					internet.tick(1000, rng);
+
+					let node = internet.node(1)?;
+					println!("Time Traversal 1 -> 19: {}", node.remote(node.index_by_node_id(&19)?)?.session()?.dist());
 				}
 			}
 			
