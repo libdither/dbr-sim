@@ -210,12 +210,21 @@ impl RemoteSession {
 				node.remote(node_idx)?.session()?.direct()?.net_addr
 			}
 			SessionType::Traversed(traversed_session) => {
+				// Destination Route Coord
 				let route_coord = traversed_session.route_coord;
-				//let origin_route_coord = node.route_coord.unwrap();
-				let node_idx = 
+				
+				// Find closest return node
+				let closest_node_idx = 
 					if let Some(node_idx) = node.peer_list.get_by_right(&route_coord) { *node_idx }
 					else { node.find_closest_peer(&route_coord)? };
-				node.remote(node_idx)?.session()?.direct()?.net_addr
+				let closest_session = node.remote(closest_node_idx)?.session()?;
+
+				// Wrap with traversed packet
+				let self_route_coord = node.route_coord.ok_or(NodeError::NoCalculatedRouteCoord)?;
+				let traversed_packet = TraversedPacket::new(route_coord, encryption, Some(self_route_coord));
+				encryption = closest_session.wrap_session(traversed_packet);
+
+				closest_session.direct()?.net_addr
 			}
 		};
 

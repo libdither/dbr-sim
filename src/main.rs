@@ -305,7 +305,7 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 					//internet.node_mut(1)?.action(NodeAction::ConnectRouted(19, 2));
 					// Connect node 1 traversed to node 19
 					internet.node_mut(1)?.action(NodeAction::ConnectTraversed(19));
-					internet.tick(1000, rng);
+					internet.tick(3000, rng);
 
 					let node = internet.node(1)?;
 					println!("Time Traversal 1 -> 19: {}", node.remote(node.index_by_node_id(&19)?)?.session()?.dist());
