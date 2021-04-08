@@ -206,7 +206,7 @@ impl CustomNode for Node {
 					}
 				},
 				Ok(None) => {},
-				Err(err) => { log::error!("Error in parsing InternetPacket from NetAddr({}) to NetAddr({}): {:?}", src_addr, dest_addr, anyhow::Error::new(err)); println!("{:?}", self); }
+				Err(err) => { log::error!("Error in parsing InternetPacket from NetAddr({}) to NetAddr({}): {:?}", src_addr, dest_addr, anyhow::Error::new(err)); println!("{}", self); }
 			}
 		}
 		
@@ -258,7 +258,7 @@ impl Node {
 		let min_peer = self.peer_list.iter()
 			.min_by_key(|(_,&p)|{
 				let diff = p - *remote_route_coord;
-				diff.dot(&diff);
+				diff.dot(&diff)
 				//println!("Dist from {:?}: {}: {}", self.node_id, self.remote(**id).unwrap().node_id, d_sq);
 				//d_sq
 			});
@@ -518,17 +518,24 @@ impl Node {
 				self.action(NodeAction::UpdateRemote(return_node_id, Some(route_coord), peer_count, peer_distance));
 			}
 			NodePacket::Traverse(ref traversal_packet) => {
+				println!("Finding closest node to: {}", traversal_packet.destination);
 				let closest_peer_idx = self.find_closest_peer(&traversal_packet.destination)?;
 				let closest_peer = self.remote(closest_peer_idx)?;
 				// Check if NodeEncryption is meant for this node
 				if traversal_packet.encryption.is_for_node(&self) {
-					self.parse_node_encryption(traversal_packet.clone().encryption, 0, outgoing)?;
+					if let Some(return_route_coord) = traversal_packet.origin {
+						self.parse_node_encryption(traversal_packet.clone().encryption, SessionType::traversed(return_route_coord), outgoing)?;
+					} else {
+						log::info!("Node({}) send message with no return coordinates: {:?}", return_node_id, traversal_packet.encryption);
+					}
 				} else {
 					// Check if next node is not node that I received the packet from
 					if return_node_id != closest_peer.node_id {
+						println!("Next: {}", closest_peer.node_id);
 						self.send_packet(closest_peer_idx, received_packet, outgoing)?;
 					} else if let Some(_origin) = traversal_packet.origin { // Else, try to traverse packet back to origin
-						unimplemented!("Implement Traversed Packet Error return")
+						log::error!("Packet Was Returned back, there seems to be a packet loop");
+						//unimplemented!("Implement Traversed Packet Error return")
 						//self.send_packet(closest_peer, TraversedPacket::new(origin, NodeEncryption::Notify { }, None), outgoing)
 					}
 				}
@@ -548,19 +555,18 @@ impl Node {
 
 		remote.pending_session = Some(Box::new( (session_id, self_ticks, initial_packets, session_type.clone()) ));
 		
+		let encryption = NodeEncryption::Handshake { recipient: dest_node_id, session_id, signer: self_node_id };
 		// TODO: actual cryptography
 		match session_type {
 			SessionType::Direct(direct) => {
 				// Directly send 
-				let encryption = NodeEncryption::Handshake { recipient: dest_node_id, session_id, session_type: SessionType::direct(self.net_addr), signer: self_node_id };
 				outgoing.push(encryption.package(direct.net_addr));
 			}
 			SessionType::Traversed(traversal) => {
 				// Send traversed through closest peer
 				let self_route_coord = self.route_coord.ok_or(NodeError::NoCalculatedRouteCoord)?;
-				let encryption = NodeEncryption::Handshake { recipient: dest_node_id, session_id, session_type: SessionType::traversed(self_route_coord), signer: self_node_id };
 				let closest_peer = self.find_closest_peer(&traversal.route_coord)?;
-				self.send_packet(closest_peer, TraversedPacket::new(traversal.route_coord, encryption, self.route_coord), outgoing)?;
+				self.send_packet(closest_peer, TraversedPacket::new(traversal.route_coord, encryption, Some(self_route_coord)), outgoing)?;
 			}
 			_ => unimplemented!(),
 		}
@@ -597,24 +603,26 @@ impl Node {
 		}
 
 		let encryption = NodeEncryption::unpackage(&received_packet)?;
-		self.parse_node_encryption(encryption, received_packet.src_addr, outgoing)
+		self.parse_node_encryption(encryption, SessionType::direct(received_packet.src_addr), outgoing)
 	}
-	fn parse_node_encryption(&mut self, encryption: NodeEncryption, return_net_addr: NetAddr, outgoing: &mut PacketVec) -> Result<Option<(NodeIdx, NodePacket)>, NodeError> {
+	fn parse_node_encryption(&mut self, encryption: NodeEncryption, return_session_type: SessionType, outgoing: &mut PacketVec) -> Result<Option<(NodeIdx, NodePacket)>, NodeError> {
 		let self_ticks = self.ticks;
 		let self_node_id = self.node_id;
 		Ok(match encryption {
-			NodeEncryption::Handshake { recipient, session_id, ref session_type, signer } => {
+			NodeEncryption::Handshake { recipient, session_id, signer } => {
 				if recipient != self.node_id { Err(RemoteNodeError::UnknownAckRecipient { recipient })?; }
 				let (remote_idx, remote) = self.add_remote(signer)?;
+				// Check if there is not already a pending session
 				if remote.pending_session.is_some() {
 					if self_node_id < remote.node_id { remote.pending_session = None }
 				}
 
-				let mut session = RemoteSession::new(session_id, session_type.clone());
+				let mut session = RemoteSession::new(session_id, return_session_type);
 				let return_ping_id = session.tracker.gen_ping(self_ticks);
-				remote.session = Some(session);
-
-				outgoing.push(NodeEncryption::Acknowledge { session_id, acknowledger: recipient, return_ping_id }.package(return_net_addr));
+				let acknowledgement = NodeEncryption::Acknowledge { session_id, acknowledger: recipient, return_ping_id };
+				let packet = session.gen_packet(acknowledgement, self)?;
+				outgoing.push(packet);
+				self.remote_mut(remote_idx)?.session = Some(session);
 				
 				self.sessions.insert(session_id, remote_idx);
 				log::debug!("[{: >6}] Node({:?}) Received Handshake: {:?}", self_ticks, self_node_id, encryption);
@@ -793,6 +801,9 @@ impl fmt::Display for Node {
 				}
 			} else {
 				write!(f, "   | NodeID({})", remote.node_id)?;
+				if let Some(route_coord) = remote.route_coord {
+					write!(f, ", @? ({}, {})", route_coord.x, route_coord.y)?;
+				}
 			}
 		}
 		writeln!(f)
