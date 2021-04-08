@@ -2,7 +2,7 @@
 
 #![allow(non_upper_case_globals)]
 
-use super::{RouteScalar, SessionID, NodeID, NodePacket, Node, NodeError, NetAddr, RouteCoord, NodeEncryption, InternetPacket, TraversalPacket};
+use super::{RouteScalar, SessionID, NodeID, NodePacket, Node, NodeError, NetAddr, RouteCoord, NodeEncryption, InternetPacket, TraversedPacket};
 
 use std::{cmp::Reverse, collections::HashMap, mem::{Discriminant, discriminant}};
 
@@ -78,7 +78,7 @@ bitflags! {
 	}
 }
 /// Represents directly connected session over plain internet
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DirectSession {
 	/// Network Address of remote
 	pub net_addr: NetAddr,
@@ -100,14 +100,15 @@ impl DirectSession {
 	}
 }
 /// Represents a session that traverses packets through the dither network to its destination
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TraversedSession {
 	/// Coordinate of remote routed node
 	pub route_coord: RouteCoord
 }
+impl TraversedSession { pub fn new(route_coord: RouteCoord) -> SessionType { SessionType::Traversed(Self { route_coord } ) } }
 
 /// Represents onion-routed session through different Dither nodes
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RoutedSession {
 	/// Coordinate of remote routed node
 	pub route_coord: RouteCoord,
@@ -115,11 +116,16 @@ pub struct RoutedSession {
 	pub proxy_nodes: Vec<SessionID>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum SessionType {
 	Direct(DirectSession),
 	Traversed(TraversedSession),
 	Routed(RoutedSession),
+}
+impl SessionType {
+	pub fn direct(net_addr: NetAddr) -> Self { DirectSession::new(net_addr) }
+	pub fn traversed(route_coord: RouteCoord) -> Self { TraversedSession::new(route_coord) }
+	pub fn routed(route_coord: RouteCoord, proxy_nodes: Vec<SessionID>) -> Self { Self::Routed(RoutedSession { route_coord, proxy_nodes } ) }
 }
 
 #[derive(Error, Debug)]
@@ -159,7 +165,6 @@ impl RemoteSession {
 			last_packet_times: HashMap::with_capacity(NUM_NODE_PACKETS),
 		}
 	}
-	pub fn from_address(session_id: SessionID, return_net_addr: NetAddr) -> Self { Self::new(session_id, DirectSession::new(return_net_addr)) }
 	pub fn direct(&self) -> Result<&DirectSession, SessionError> {
 		if let SessionType::Direct(direct) = &self.session_type { Ok(direct) } else { Err(SessionError::NotDirectType) }
 	}
@@ -183,7 +188,6 @@ impl RemoteSession {
 	pub fn dist(&self) -> RouteScalar {
 		return self.tracker.dist_avg;
 	}
-
 	pub fn gen_packet(&self, encryption: NodeEncryption, node: &Node) -> Result<InternetPacket, NodeError> {
 		let mut encryption = encryption;
 		let outgoing_net_addr = match &self.session_type {
@@ -195,7 +199,7 @@ impl RemoteSession {
 					let remote = node.remote(node.index_by_session_id(&session_id)?)?;
 					let origin_coord = remote.route_coord.unwrap();
 
-					let routed_packet = TraversalPacket::new(current_route_coord, encryption, Some(origin_coord));
+					let routed_packet = TraversedPacket::new(current_route_coord, encryption, Some(origin_coord));
 					encryption = self.wrap_session(routed_packet);
 					current_route_coord = origin_coord;
 				}

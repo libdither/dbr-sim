@@ -16,7 +16,7 @@ mod remote;
 pub use types::{NodeID, SessionID, RouteCoord, RouteScalar};
 use session::{SessionError, RemoteSession, SessionType};
 use remote::{RemoteNode, RemoteNodeError};
-pub use packet::{NodePacket, TraversalPacket, NodeEncryption};
+pub use packet::{NodePacket, TraversedPacket, NodeEncryption};
 
 use crate::internet::{CustomNode, NetAddr, NetSimPacket, NetSimPacketVec, NetSimRequest};
 use crate::plot::GraphPlottable;
@@ -97,7 +97,7 @@ pub enum NodeAction {
 	RequestRouteCoord(NodeID),
 	/// Establish Traversed Session with remote NodeID
 	/// Looks up remote node's RouteCoord on DHT and enables Traversed Session
-	ConnectTraversal(NodeID),
+	ConnectTraversed(NodeID),
 	/// Establishes Routed session with remote NodeID
 	/// Looks up remote node's RouteCoord on DHT and runs CalculateRoute after RouteCoord is received
 	/// * `usize`: Number of intermediate nodes to route through
@@ -273,7 +273,7 @@ impl Node {
 				out_actions.push(NodeAction::Connect(remote_node_id, net_addr, vec![NodePacket::ExchangeInfo(self.route_coord, 0, 0)])); // ExchangeInfo packet will be filled in dynamically
 			}
 			NodeAction::Connect(remote_node_id, remote_net_addr, ref packets) => {
-				self.direct_connect(remote_node_id, remote_net_addr, packets.clone(), outgoing)?;
+				self.connect(remote_node_id, SessionType::direct(remote_net_addr), packets.clone(), outgoing)?;
 			}
 			NodeAction::UpdateRemote(remote_node_id, remote_route_coord, remote_direct_count, remote_ping) => {
 				self.route_map.add_edge(remote_node_id, self.node_id, remote_ping);
@@ -358,15 +358,15 @@ impl Node {
 			NodeAction::RequestRouteCoord(remote_node_id) => {
 				outgoing.push(InternetPacket::gen_request(self.net_addr, InternetRequest::RouteCoordDHTRead(remote_node_id)));
 			}
-			NodeAction::ConnectTraversal(remote_node_id) => {
+			NodeAction::ConnectTraversed(remote_node_id) => {
 				let (_, remote) = self.add_remote(remote_node_id)?;
 				if let Some(remote_route_coord) = remote.route_coord {
-					// Toggle Pending Route
-					remote.pending_route = Some(vec![(remote_route_coord, None)]);
+					let data = "Hello!".to_owned().into_bytes();
+					self.connect(remote_node_id, SessionType::traversed(remote_route_coord), vec![NodePacket::Data(data)], outgoing)?;
 				} else {
 					// Wait for RouteCoord DHT to resolve before re-running
 					out_actions.push(NodeAction::RequestRouteCoord(remote_node_id));
-					out_actions.push(NodeAction::ConnectTraversal(remote_node_id).gen_condition(NodeActionCondition::RemoteRouteCoord(remote_node_id)));
+					out_actions.push(NodeAction::ConnectTraversed(remote_node_id).gen_condition(NodeActionCondition::RemoteRouteCoord(remote_node_id)));
 				}
 			}
 			NodeAction::ConnectRouted(remote_node_id, hops) => {
@@ -528,8 +528,8 @@ impl Node {
 					if return_node_id != closest_peer.node_id {
 						self.send_packet(closest_peer_idx, received_packet, outgoing)?;
 					} else if let Some(_origin) = traversal_packet.origin { // Else, try to traverse packet back to origin
-						unimplemented!("Implement Traversal Packet Error return")
-						//self.send_packet(closest_peer, TraversalPacket::new(origin, NodeEncryption::Notify { }, None), outgoing)
+						unimplemented!("Implement Traversed Packet Error return")
+						//self.send_packet(closest_peer, TraversedPacket::new(origin, NodeEncryption::Notify { }, None), outgoing)
 					}
 				}
 			}
@@ -539,18 +539,35 @@ impl Node {
 	}
 
 	/// Initiate handshake process and send packets when completed
-	fn direct_connect(&mut self, dest_node_id: NodeID, dest_addr: NetAddr, initial_packets: Vec<NodePacket>, outgoing: &mut PacketVec) -> Result<(), NodeError> {
+	pub fn connect(&mut self, dest_node_id: NodeID, session_type: SessionType, initial_packets: Vec<NodePacket>, outgoing: &mut PacketVec) -> Result<(), NodeError> {
 		let session_id: SessionID = rand::random(); // Create random session ID
 		//let self_node_id = self.node_id;
 		let self_ticks = self.ticks;
+		let self_node_id = self.node_id;
 		let (_, remote) = self.add_remote(dest_node_id)?;
-		remote.pending_session = Some(Box::new((session_id, self_ticks, initial_packets)));
-		// TODO: public key encryption
-		let encryption = NodeEncryption::Handshake { recipient: dest_node_id, session_id, signer: self.node_id };
-		outgoing.push(encryption.package(dest_addr));
+
+		remote.pending_session = Some(Box::new( (session_id, self_ticks, initial_packets, session_type.clone()) ));
+		
+		// TODO: actual cryptography
+		match session_type {
+			SessionType::Direct(direct) => {
+				// Directly send 
+				let encryption = NodeEncryption::Handshake { recipient: dest_node_id, session_id, session_type: SessionType::direct(self.net_addr), signer: self_node_id };
+				outgoing.push(encryption.package(direct.net_addr));
+			}
+			SessionType::Traversed(traversal) => {
+				// Send traversed through closest peer
+				let self_route_coord = self.route_coord.ok_or(NodeError::NoCalculatedRouteCoord)?;
+				let encryption = NodeEncryption::Handshake { recipient: dest_node_id, session_id, session_type: SessionType::traversed(self_route_coord), signer: self_node_id };
+				let closest_peer = self.find_closest_peer(&traversal.route_coord)?;
+				self.send_packet(closest_peer, TraversedPacket::new(traversal.route_coord, encryption, self.route_coord), outgoing)?;
+			}
+			_ => unimplemented!(),
+		}
+		
 		Ok(())
 	}
-	// Create multiple Routed Sessions that sequentially resolve their pending_route fields as Traversal Packets are acknowledged
+	// Create multiple Routed Sessions that sequentially resolve their pending_route fields as Traversed Packets are acknowledged
 	/* fn routed_connect(&mut self, dest_node_id: NodeID, outgoing: &mut PacketVec) {
 		//let routed_session_id: SessionID = rand::random();
 		
@@ -586,13 +603,14 @@ impl Node {
 		let self_ticks = self.ticks;
 		let self_node_id = self.node_id;
 		Ok(match encryption {
-			NodeEncryption::Handshake { recipient, session_id, signer } => {
+			NodeEncryption::Handshake { recipient, session_id, ref session_type, signer } => {
 				if recipient != self.node_id { Err(RemoteNodeError::UnknownAckRecipient { recipient })?; }
 				let (remote_idx, remote) = self.add_remote(signer)?;
 				if remote.pending_session.is_some() {
 					if self_node_id < remote.node_id { remote.pending_session = None }
 				}
-				let mut session = RemoteSession::from_address(session_id, return_net_addr);
+
+				let mut session = RemoteSession::new(session_id, session_type.clone());
 				let return_ping_id = session.tracker.gen_ping(self_ticks);
 				remote.session = Some(session);
 
@@ -606,11 +624,10 @@ impl Node {
 				let remote_idx = self.index_by_node_id(&acknowledger)?;
 				let mut remote = self.remote_mut(remote_idx)?;
 				if let Some(boxed_pending) = remote.pending_session.take() {
-					let (pending_session_id, time_sent_handshake, packets_to_send) = *boxed_pending;
-					
+					let (pending_session_id, time_sent_handshake, packets_to_send, pending_session_type) = *boxed_pending;
 					if pending_session_id == session_id {
 						// Create session and acknowledge out-of-tracker ping
-						let mut session = RemoteSession::from_address(session_id, return_net_addr);
+						let mut session = RemoteSession::new(session_id, pending_session_type);
 						let ping_id = session.tracker.gen_ping(time_sent_handshake);
 						let distance = session.tracker.acknowledge_ping(ping_id, self_ticks)?;
 						remote.session = Some(session); // update remote

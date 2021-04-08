@@ -1,9 +1,9 @@
 
-use super::{RouteCoord, NodeID, session::PingID, SessionID, NetAddr, InternetPacket, NodeError};
+use super::{InternetPacket, NetAddr, NodeError, NodeID, RouteCoord, SessionID, session::{PingID, SessionType}};
 
 /// Data structure that represents a NodeEncryption traversing through the network 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct TraversalPacket {
+pub struct TraversedPacket {
 	/// Place to route packet to
 	pub destination: RouteCoord,
 	/// Encrypted Session Data
@@ -11,9 +11,9 @@ pub struct TraversalPacket {
 	/// Signed & Assymetrically encrypted return location
 	pub origin: Option<RouteCoord>,
 }
-impl TraversalPacket {
+impl TraversedPacket {
 	pub fn new(destination: RouteCoord, encryption: NodeEncryption, origin: Option<RouteCoord>) -> NodePacket {
-		NodePacket::Traverse(Box::new( TraversalPacket { destination, encryption, origin } ))
+		NodePacket::Traverse(Box::new( TraversedPacket { destination, encryption, origin } ))
 	}
 }
 
@@ -56,23 +56,25 @@ pub enum NodePacket {
 	WantPing(NodeID, NetAddr),
 	/// Sent when node accepts a WantPing Request
 	/// * `NodeID`: NodeID of Node who send the request in response to a RequestPings
-	/// * `u64`: Distance to that nodeTraversalPacket
+	/// * `u64`: Distance to that nodeTraversedPacket
 	AcceptWantPing(NodeID, u64),
 
-	/// Packet Traversal
+	/// Packet Traversed
 	/// Represents a packet that is traversed through the network to it's destination using a RouteCoord
-	Traverse(Box<TraversalPacket>),
+	Traverse(Box<TraversedPacket>),
 
-	/// Request a session that is routed through node to another RouteCoordinate
+	/* /// Request a session that is routed through node to another RouteCoordinate
 	RoutedSessionRequest(RouteCoord),
-	RoutedSessionAccept(),
+	RoutedSessionAccept(), */
+
+	Data(Vec<u8>)
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum NodeEncryption {
 	/// Handshake is sent from node wanting to establish secure tunnel to another node
 	/// session_id and signer are encrypted with recipient's public key
-	Handshake { recipient: NodeID, session_id: SessionID, signer: NodeID },
+	Handshake { recipient: NodeID, session_id: SessionID, session_type: SessionType, signer: NodeID },
 	/// When the other node receives the Handshake, they will send back an Acknowledge
 	/// When the original party receives the Acknowledge, that tunnel may now be used for 2-way packet transfer
 	/// acknowledger and return_ping_id are symmetrically encrypted with session key
@@ -106,7 +108,7 @@ impl NodeEncryption {
 	pub fn is_for_node(&self, node: &crate::node::Node) -> bool {
 		use NodeEncryption::*;
 		match *self {
-			Handshake { recipient, session_id:_, signer:_ } => node.node_id == recipient,
+			Handshake { recipient, session_id:_, session_type:_, signer:_ } => node.node_id == recipient,
 			Acknowledge { session_id, ref acknowledger, return_ping_id:_ } => {
 				let result: Result<(), NodeError> = try {
 					let result = node.remote(node.index_by_node_id(acknowledger)?)?.pending_session.as_ref().map(|b|b.0 == session_id);

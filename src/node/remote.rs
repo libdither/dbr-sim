@@ -1,4 +1,4 @@
-use super::{Node, NodeError, NodeID, SessionID, SessionError, RemoteSession, RouteCoord, InternetPacket, NodePacket};
+use super::{InternetPacket, Node, NodeError, NodeID, NodePacket, RemoteSession, RouteCoord, SessionError, SessionID, session::SessionType};
 
 use thiserror::Error;
 
@@ -27,11 +27,7 @@ pub struct RemoteNode {
 	// If handshake is pending: Some(pending_session_id, time_sent_handshake, packets_to_send)
 	#[derivative(PartialEq="ignore", Hash="ignore")]
 	#[serde(skip)]
-	pub pending_session: Option<Box< (SessionID, usize, Vec<NodePacket>) >>,
-	// If route is pending: Some(search location route coords, NodeIDs found willing to create RoutedSessions in search location)
-	#[derivative(PartialEq="ignore", Hash="ignore")]
-	#[serde(skip)]
-	pub pending_route: Option<Vec<(RouteCoord, Option<NodeID>)>>,
+	pub pending_session: Option<Box< (SessionID, usize, Vec<NodePacket>, SessionType) >>,
 	// Contains Session details if session is connected
 	#[derivative(PartialEq="ignore", Hash="ignore")]
 	pub session: Option<RemoteSession>, // Session object, is None if no connection is active
@@ -42,7 +38,6 @@ impl RemoteNode {
 			node_id,
 			route_coord: None,
 			pending_session: None,
-			pending_route: None,
 			session: None,
 		}
 	}
