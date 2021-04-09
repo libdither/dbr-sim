@@ -70,15 +70,9 @@ pub enum NodeAction {
 	/// Bootstrap this node onto a specific other network node, starts the self-organization process
 	Bootstrap(NodeID, NetAddr),
 	/// Initiate Handshake with remote NodeID, NetAddr and initial packets
-	Connect(NodeID, NetAddr, Vec<NodePacket>),
+	Connect(NodeID, SessionType, Vec<NodePacket>),
 	/* /// Ping a node
-	Ping(NodeID, usize), // Ping node X number of times
-	/// Continually Ping remote until connection is deamed viable or unviable
-	/// * `NodeID`: Node to test
-	/// * `isize`: Timeout for Testing remotes
-	TestNode(NodeID, isize),
-	/// Test node if need new nodes
-	MaybeTestNode(NodeID), */
+	Ping(NodeID, usize), // Ping node X number of times */
 	/// Run various functions pertaining to receiving specific information
 	/// * `usize`: Number of direct connections a remote node has
 	/// * `u64`: Ping from remote to me
@@ -97,14 +91,14 @@ pub enum NodeAction {
 	RequestRouteCoord(NodeID),
 	/// Establish Traversed Session with remote NodeID
 	/// Looks up remote node's RouteCoord on DHT and enables Traversed Session
-	ConnectTraversed(NodeID),
+	ConnectTraversed(NodeID, Vec<NodePacket>),
 	/// Establishes Routed session with remote NodeID
 	/// Looks up remote node's RouteCoord on DHT and runs CalculateRoute after RouteCoord is received
 	/// * `usize`: Number of intermediate nodes to route through
 	/// * `f64`: Random intermediate offset (high offset is more anonymous but less efficient, very high offset is random routing strategy)
 	ConnectRouted(NodeID, usize),
 	/// Send specific packet to node
-	Packet(NodeID, NodePacket),
+	SendData(NodeID, Vec<u8>),
 	/// Establish a dynamic routed connection
 	// Route(NodeID, RouteCoord),
 	/// Condition for a condition to be fulfilled before running imbedded Action
@@ -273,10 +267,10 @@ impl Node {
 		log::trace!("[{: >6}] NodeID({}) Running Action: {:?}", self.ticks, self.node_id, action);
 		match action {
 			NodeAction::Bootstrap(remote_node_id, net_addr) => {
-				out_actions.push(NodeAction::Connect(remote_node_id, net_addr, vec![NodePacket::ExchangeInfo(self.route_coord, 0, 0)])); // ExchangeInfo packet will be filled in dynamically
+				self.connect(remote_node_id, SessionType::direct(net_addr), vec![NodePacket::ExchangeInfo(self.route_coord, 0, 0)], outgoing)?;
 			}
-			NodeAction::Connect(remote_node_id, remote_net_addr, ref packets) => {
-				self.connect(remote_node_id, SessionType::direct(remote_net_addr), packets.clone(), outgoing)?;
+			NodeAction::Connect(remote_node_id, session_type, ref packets) => {
+				self.connect(remote_node_id, session_type, packets.clone(), outgoing)?;
 			}
 			NodeAction::UpdateRemote(remote_node_id, remote_route_coord, remote_direct_count, remote_ping) => {
 				self.route_map.add_edge(remote_node_id, self.node_id, remote_ping);
@@ -361,15 +355,14 @@ impl Node {
 			NodeAction::RequestRouteCoord(remote_node_id) => {
 				outgoing.push(InternetPacket::gen_request(self.net_addr, InternetRequest::RouteCoordDHTRead(remote_node_id)));
 			}
-			NodeAction::ConnectTraversed(remote_node_id) => {
+			NodeAction::ConnectTraversed(remote_node_id, packets) => {
 				let (_, remote) = self.add_remote(remote_node_id)?;
 				if let Some(remote_route_coord) = remote.route_coord {
-					let data = "Hello!".to_owned().into_bytes();
-					self.connect(remote_node_id, SessionType::traversed(remote_route_coord), vec![NodePacket::Data(data)], outgoing)?;
+					self.connect(remote_node_id, SessionType::traversed(remote_route_coord), packets, outgoing)?;
 				} else {
 					// Wait for RouteCoord DHT to resolve before re-running
 					out_actions.push(NodeAction::RequestRouteCoord(remote_node_id));
-					out_actions.push(NodeAction::ConnectTraversed(remote_node_id).gen_condition(NodeActionCondition::RemoteRouteCoord(remote_node_id)));
+					out_actions.push(NodeAction::ConnectTraversed(remote_node_id, packets).gen_condition(NodeActionCondition::RemoteRouteCoord(remote_node_id)));
 				}
 			}
 			NodeAction::ConnectRouted(remote_node_id, hops) => {
@@ -396,8 +389,8 @@ impl Node {
 					out_actions.push(NodeAction::ConnectRouted(remote_node_id, hops).gen_condition(NodeActionCondition::RemoteRouteCoord(remote_node_id)));
 				}
 			}
-			NodeAction::Packet(remote_node_id, packet) => {
-				self.send_packet(self.index_by_node_id(&remote_node_id)?, packet, outgoing)?;
+			NodeAction::SendData(remote_node_id, data) => {
+				self.send_packet(self.index_by_node_id(&remote_node_id)?, NodePacket::Data(data), outgoing)?;
 			}
 			NodeAction::Condition(condition, embedded_action) => {
 				// Returns embedded action if condition is satisfied (e.g. check() returns true), else returns false to prevent action from being deleted
@@ -499,7 +492,7 @@ impl Node {
 					return Ok(())
 				} else { // If no session, send request
 					if request_remote.pending_session.is_none() {
-						self.action(NodeAction::Connect(requesting_node_id, requesting_net_addr, vec![NodePacket::AcceptWantPing(return_node_id, distance_self_to_return)]));
+						self.action(NodeAction::Connect(requesting_node_id, SessionType::direct(requesting_net_addr), vec![NodePacket::AcceptWantPing(return_node_id, distance_self_to_return)]));
 					}
 				}
 			}

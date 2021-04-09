@@ -180,18 +180,18 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 			let net_addr = addr.parse::<NetAddr>().context("node: must pass NetAddr corresponding to existing node")?;
 			let node = internet.node_mut(net_addr)?;
 			match command {
-				["connect" | "conn", id, addr] => {
+				/* ["connect" | "conn", id, addr] => {
 					let remote_node_id = id.parse::<NodeID>().context("node: connect: must pass valid NodeID")?;
 					let remote_net_addr = addr.parse::<NetAddr>().context("node: connect: must pass valid NetAddr")?;
 					println!("Connecting NodeID({:?}) to NodeID({:?}), NetAddr({:?}))", node.node_id, remote_node_id, remote_net_addr);
-					node.action(NodeAction::Connect(remote_node_id, remote_net_addr, vec![]));
+					node.action(NodeAction::Connect(remote_node_id, SessionType::direct(remote_net_addr), vec![]));
 				}
-				["connect" | "conn"] => bail!("node: connect: <NodeID> <NetAddr>"),
+				["connect" | "conn"] => bail!("node: connect: <NodeID> <NetAddr>"), */
 				["bootstrap" | "boot", id, addr] => {
 					let remote_node_id = id.parse::<NodeID>().context("node: boostrap: must pass valid NodeID")?;
 					let remote_net_addr = addr.parse::<NetAddr>().context("node: boostrap: must pass valid NetAddr")?;
 					println!("Bootstrapping NodeID({:?}) to NodeID({:?}), NetAddr({:?}))", node.node_id, remote_node_id, remote_net_addr);
-					node.action(NodeAction::Connect(remote_node_id, remote_net_addr, vec![]));
+					node.action(NodeAction::Bootstrap(remote_node_id, remote_net_addr));
 				}
 				["boostrap" | "boot"] => bail!("node: bootstrap: <NodeID> <NetAddr>"),
 				["print"] => println!("Node: {:#?}", node),
@@ -202,11 +202,15 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 				}
 				["traverse", id] => {
 					let remote_node_id = id.parse::<NodeID>().context("node: traverse: must pass valid NodeID")?;
-					node.action(NodeAction::ConnectTraversed(remote_node_id));
+					node.action(NodeAction::ConnectTraversed(remote_node_id, vec![]));
 				}
 				["route", id] => {
 					let remote_node_id = id.parse::<NodeID>().context("node: route: must pass valid NodeID")?;
 					node.action(NodeAction::ConnectRouted(remote_node_id, 3));
+				}
+				["send", id, string] => {
+					let remote_node_id = id.parse::<NodeID>().context("node: send: must pass valid NodeID")?;
+					node.action(NodeAction::SendData(remote_node_id, string.as_bytes().to_owned()))
 				}
 				_ => bail!("node: unknown subcommand"),
 			}
@@ -214,7 +218,7 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 		["node"] => bail!("node: requires subcommand"),
 		["test", subcommand @ ..] => {
 			match subcommand {
-				["sample", amount] => {
+				["sample-artificial", amount] => {
 					let num_samples = amount.parse::<usize>().context("test: sample: requires number of samples")?;
 					use permutation_iterator::{RandomPairPermutor, Permutor};
 					let nlen = internet.nodes.len() as u32;
@@ -298,13 +302,19 @@ fn parse_command(internet: &mut NetSim<Node>, input: &[&str], rng: &mut impl ran
 						}).unwrap();
 					}
 					wtr.flush().unwrap();
-				}
+				}				
 				_ => {
 					plot::default_graph(internet, &internet.router.field_dimensions, "target/images/network_snapshot.png", (1280, 720)).expect("Failed to output image");
 					
 					//internet.node_mut(1)?.action(NodeAction::ConnectRouted(19, 2));
 					// Connect node 1 traversed to node 19
-					internet.node_mut(1)?.action(NodeAction::ConnectTraversed(19));
+					internet.node_mut(1)?.action(NodeAction::ConnectTraversed(19, vec![]));
+					internet.tick(3000, rng);
+
+					let node = internet.node(1)?;
+					println!("Time Traversal 1 -> 19: {}", node.remote(node.index_by_node_id(&19)?)?.session()?.dist());
+
+					internet.node_mut(1)?.action(NodeAction::Bootstrap(19, 19));
 					internet.tick(3000, rng);
 
 					let node = internet.node(1)?;
