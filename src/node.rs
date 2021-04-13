@@ -163,7 +163,7 @@ pub struct Node {
 
 	pub route_coord: Option<RouteCoord>, // This node's route coordinate (None if not yet calculated)
 	#[derivative(Debug="ignore")]
-	deux_ex_data: Option<RouteCoord>,
+	deus_ex_data: Option<RouteCoord>,
 	pub is_public: bool, // Does this node publish it's RouteCoord to the DHT?
 	#[derivative(Debug="ignore")]
 	public_route: Option<RouteCoord>,
@@ -223,7 +223,7 @@ impl CustomNode for Node {
 	}
 	fn action(&mut self, action: NodeAction) { self.action_list.push(action); }
 	fn as_any(&self) -> &dyn Any { self }
-	fn set_deus_ex_data(&mut self, data: Option<RouteCoord>) { self.deux_ex_data = data; }
+	fn set_deus_ex_data(&mut self, data: Option<RouteCoord>) { self.deus_ex_data = data; }
 }
 
 impl Node {
@@ -680,21 +680,31 @@ impl Node {
 		Ok(())
 	}
 	fn calculate_route_coord(&mut self) -> Result<RouteCoord, NodeError> {
-		let route_coord = self.deux_ex_data.ok_or(NodeError::Other(anyhow!("no deus ex machina data")))?;
+		let route_coord = self.deus_ex_data.ok_or(NodeError::Other(anyhow!("no deus ex machina data")))?;
 		log::debug!("NodeID({}) Calculated RouteCoord({})", self.node_id, route_coord);
 		return Ok(route_coord);
 
-		/* // TODO: Fix matrix output rotation & translation
+		/* use nalgebra::{DMatrix, SymmetricEigen};
+		// TODO: Fix matrix output rotation & translation
 		// println!("node_list: {:?}", self.remotes.iter().map(|(&id,n)|(id,n.route_coord)).collect::<Vec<(NodeID,Option<RouteCoord>)>>() );
-		let nodes: Vec<(NodeID, RouteCoord)> = self.direct_sorted.iter().filter_map(|(_,&node_id)|self.remote(&node_id).ok().map(|node|node.route_coord.map(|s|(node_id,s))).flatten()).collect();
-		let mat_size = nodes.len() + 1;
+		/* let nodes: Vec<(NodeIdx, RouteCoord)> = self.direct_sorted.iter().filter_map(|(_,&node_idx)|self.remote(node_idx).ok().map(|node|node.route_coord.map(|s|(node_idx,s))).flatten()).collect(); */
+		
+		// Get index list of all peered remotes
+		let remote_idxs = self.peer_list.iter().map(|(idx,_)| *idx).collect::<Vec<NodeIdx>>();
+		let mat_size = remote_idxs.len() + 1;
 		
 		/* println!("filtered_node_list: {:?}", nodes); */
 		let mut proximity_matrix = DMatrix::from_element(mat_size, mat_size, 0f64);
 		
+		
 		// This is inefficient b.c. multiple vector creation but whatever
-		let (mut first_row_insert, node_id_index): (Vec<u64>, Vec<NodeID>) = self.route_map.edges(self.node_id).filter_map(|(_,n,&e)|(e!=0).then(||(e,n))).unzip();
-		first_row_insert.insert(0, 0);
+		/* let node_id_index: Vec<NodeIdx> = self.route_map.edges(self.node_id).filter_map(|(_,n,&e)|{
+			(e != 0 && n != self.node_id).then(||(self.index_by_node_id(&n).unwrap()))
+		}).unzip(); */
+
+		
+		/* let mut first_row_insert = self.peer_list.iter().map(|(a, _)|*a).collect();
+		first_row_insert.insert(0, 0); */
 
 		/* println!("first_row_insert: {:?}", first_row_insert);
 		println!("node: {:?}", self);
@@ -705,14 +715,15 @@ impl Node {
 			proximity_matrix[(i,0)] = w as f64;
 		});
 
-		node_id_index.iter().enumerate().for_each(|(i_y, id_y)|{
-			node_id_index.iter().enumerate().for_each(|(i_x, id_x)|{
-				let coord_x = self.remote(id_x).unwrap().route_coord.unwrap();
-				let coord_y = self.remote(id_y).unwrap().route_coord.unwrap();
-				let dist_vec = Vector2::new(coord_x.0 as f64, coord_x.1 as f64) - Vector2::new(coord_y.0 as f64,coord_y.1 as f64);
-				let dist = dist_vec.norm();
-				proximity_matrix[(i_y+1, i_x+1)] = dist;
-				proximity_matrix[(i_x+1, i_y+1)] = dist;
+		node_id_index.iter().enumerate().for_each(|(i_row, idx_row)|{
+			node_id_index.iter().enumerate().for_each(|(i_col, idx_col)|{
+				let coord_row = self.remote(*idx_row).unwrap().route_coord.unwrap();
+				let coord_col = self.remote(*idx_col).unwrap().route_coord.unwrap();
+				/* let dist_vec = Vector2::new(coord_x.0 as f64, coord_x.1 as f64) - Vector2::new(coord_y.0 as f64,coord_y.1 as f64);
+				let dist = dist_vec.norm(); */				
+				let dist = types::route_dist(&coord_row, &coord_col);
+				proximity_matrix[(i_row+1, i_col+1)] = dist;
+				proximity_matrix[(i_col+1, i_row+1)] = dist;
 			});
 		});
 		println!("Proximity Matrix: {}", proximity_matrix);
@@ -740,10 +751,10 @@ impl Node {
 
 		// Map MDS output to 2 RouteCoordinates
 		// TODO: Refactor this messy code
-		let v1_routecoord = self.remote(&node_id_index[0])?.route_coord.unwrap();
-		let v1 = Vector2::new(v1_routecoord.0 as f64, v1_routecoord.1 as f64);
-		let v2_routecoord = self.remote(&node_id_index[1])?.route_coord.unwrap();
-		let v2 = Vector2::new(v2_routecoord.0 as f64, v2_routecoord.1 as f64);
+		let v1_routecoord = self.remote(self.index_by_node_id(&node_id_index[0])?)?.route_coord.unwrap();
+		let v1 = v1_routecoord.coords.map(|s|s as f64);
+		let v2_routecoord = self.remote(self.index_by_node_id(&node_id_index[1])?)?.route_coord.unwrap();
+		let v2 = v2_routecoord.coords.map(|s|s as f64);
 		use nalgebra::{U2, U1};
 		let x1 = x_matrix.row(1).clone_owned().reshape_generic(U2,U1);
 		//println!("x1: {}", x1);
@@ -769,7 +780,7 @@ impl Node {
 		let v3_g = rot * x3s;
 		
 		log::info!("RouteCoord generated: {}", v3_g);
-		Ok((v3_g[0] as i64, v3_g[1] as i64)) */
+		Ok(Point2::new(v3_g[0] as i64, v3_g[1] as i64)) */
 	}
 }
 
